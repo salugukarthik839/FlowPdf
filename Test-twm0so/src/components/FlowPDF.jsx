@@ -2,6 +2,46 @@ import React, { useState } from "react";
 const { storage } = require("uxp");
 const { app, FitOptions, MeasurementUnits, RulerOrigin } = require("indesign");
 
+// UXP-compatible alert function
+const showAlert = (message) => {
+  try {
+    // Try standard alert first
+    if (typeof alert !== "undefined") {
+      alert(message);
+      return;
+    }
+  } catch (e) {
+    console.log("Standard alert failed:", e);
+  }
+
+  try {
+    // Try InDesign dialog
+    if (app && app.dialogs) {
+      app.dialogs
+        .add({
+          name: "FlowPDF Alert",
+          canCancel: false,
+          dialogColumns: [
+            {
+              staticTexts: [
+                {
+                  staticLabel: message,
+                },
+              ],
+            },
+          ],
+        })
+        .show();
+      return;
+    }
+  } catch (e) {
+    console.log("InDesign dialog failed:", e);
+  }
+
+  // Fallback to console
+  console.log("ALERT:", message);
+};
+
 // Rectangle class for geometry
 function Rectangle(x, y, width, height) {
   this.x = x;
@@ -52,8 +92,10 @@ function rectsOverlap(r1, r2) {
 
 function FlowPdf() {
   const [uploadedFiles, setUploadedFiles] = useState([]);
+  const [statusMessage, setStatusMessage] = useState("");
   const fileClick = async (e) => {
     //  setUploadedFiles(["karthik", "salugu"]);
+    setStatusMessage("🔄 Processing files...");
     const fs = require("uxp").storage.localFileSystem;
     const fileEntries = await fs.getFileForOpening({
       types: ["pdf", "png", "jpg", "jpeg"],
@@ -64,12 +106,12 @@ function FlowPdf() {
       !fileEntries ||
       (Array.isArray(fileEntries) && fileEntries.length === 0)
     ) {
-      alert("No files selected");
+      setStatusMessage("❌ No files selected");
       return;
     }
 
     if (!app.documents.length) {
-      alert("No active document open in InDesign.");
+      setStatusMessage("❌ No active document open in InDesign");
       return;
     }
 
@@ -105,9 +147,9 @@ function FlowPdf() {
       a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
     );
     if (files.length > 50) {
-      alert(
-        "You can only process up to 50 files at a time. Only the first 50 will be used."
-      );
+      const message =
+        "You can only process up to 50 files at a time. Only the first 50 will be used.";
+      setStatusMessage(`⚠️ ${message}`);
     }
     const limitedFiles = files.slice(0, 50);
 
@@ -245,9 +287,8 @@ function FlowPdf() {
           rect.fit(FitOptions.CONTENT_TO_FRAME);
           placed = true;
         } else {
-          alert(
-            `File "${fileEntry.name}" is too large to fit on any page at original size.`
-          );
+          const message = `File "${fileEntry.name}" is too large to fit on any page at original size.`;
+          setStatusMessage(`❌ ${message}`);
         }
       }
 
@@ -262,14 +303,63 @@ function FlowPdf() {
       setUploadedFiles(limitedFiles.map((f) => f.name));
     }, 0);
 
-    alert(
-      `Successfully placed ${placedCount} out of ${files.length} file(s) at original size, with no collision.`
-    );
+    const successMessage = `Successfully placed ${placedCount} out of ${files.length} file(s) at original size, with no collision.`;
+    setStatusMessage(`✅ ${successMessage}`);
   };
 
   return (
     <div>
       <button onClick={fileClick}>Upload</button>
+
+      {statusMessage && (
+        <div
+          style={{
+            marginTop: 8,
+            padding: 8,
+            backgroundColor: statusMessage.includes("❌")
+              ? "#ffebee"
+              : statusMessage.includes("⚠️")
+              ? "#fff3e0"
+              : "#e8f5e8",
+            border: `1px solid ${
+              statusMessage.includes("❌")
+                ? "#f44336"
+                : statusMessage.includes("⚠️")
+                ? "#ff9800"
+                : "#4caf50"
+            }`,
+            borderRadius: 4,
+            fontSize: 14,
+            position: "relative",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <span>{statusMessage}</span>
+          <button
+            onClick={() => setStatusMessage("")}
+            style={{
+              background: "none",
+              border: "none",
+              fontSize: 16,
+              cursor: "pointer",
+              padding: "0 4px",
+              marginLeft: 8,
+              color: statusMessage.includes("❌")
+                ? "#f44336"
+                : statusMessage.includes("⚠️")
+                ? "#ff9800"
+                : "#4caf50",
+              fontWeight: "bold",
+            }}
+            title="Close"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       <div style={{ marginTop: 8 }}>
         <label>Uploaded Files ({uploadedFiles.length}):</label>
         <div
