@@ -91,27 +91,44 @@ function rectsOverlap(r1, r2) {
 }
 
 function FlowPdf() {
-  const [uploadedFiles, setUploadedFiles] = useState([]);
-  const [statusMessage, setStatusMessage] = useState("");
+  const [fileItems, setFileItems] = useState([]); // {id, name, size, status: 'pending'|'success'|'failed', error?}
+  const [toasts, setToasts] = useState([]); // [{id, message, type: 'success'|'error'|'warning'|'info'}]
+  const [uploadHover, setUploadHover] = useState(false);
+  const [uploadActive, setUploadActive] = useState(false);
+  const [activeTab, setActiveTab] = useState("uploaded"); // 'uploaded' or 'failed'
+
+  // Toast notification helper
+  const showToast = (message, type = "info") => {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, message, type }]);
+    // Auto-dismiss after 5 seconds
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 5000);
+  };
+
+  const removeToast = (id) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  };
   const fileClick = async (e) => {
     //  setUploadedFiles(["karthik", "salugu"]);
-    setStatusMessage("🔄 Processing files...");
+    //setStatusMessage("🔄 Processing files...");
     const fs = require("uxp").storage.localFileSystem;
     const fileEntries = await fs.getFileForOpening({
       types: ["pdf", "png", "jpg", "jpeg"],
       allowMultiple: true,
     });
 
-    if (
-      !fileEntries ||
-      (Array.isArray(fileEntries) && fileEntries.length === 0)
-    ) {
-      setStatusMessage("❌ No files selected");
-      return;
-    }
+   //if (
+      //!fileEntries ||
+      //(Array.isArray(fileEntries) && fileEntries.length === 0)
+    //) {
+      //setStatusMessage("❌ No files selected");
+      //return;
+    //}
 
     if (!app.documents.length) {
-      setStatusMessage("❌ No active document open in InDesign");
+      showToast("No active document open in InDesign", "error");
       return;
     }
 
@@ -149,11 +166,24 @@ function FlowPdf() {
     if (files.length > 50) {
       const message =
         "You can only process up to 50 files at a time. Only the first 50 will be used.";
-      setStatusMessage(`⚠️ ${message}`);
+      showToast(message, "warning");
+      return;
     }
     const limitedFiles = files.slice(0, 50);
 
+    // Initialize UI with pending items - APPEND to existing items
+    const initialItems = limitedFiles.map((f, idx) => ({
+      id: `${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 8)}`,
+      name: f.name,
+      // UXP File entries often expose size; if missing, we'll display "—"
+      size: typeof f.size === "number" ? f.size : null,
+      status: "pending",
+    }));
+    setFileItems(prev => [...prev, ...initialItems]);
+
     let placedCount = 0;
+    const successItems = [];
+    const failedItems = [];
 
     // Function to get existing rectangles on a page
     const getExistingRects = (page) => {
@@ -233,8 +263,17 @@ function FlowPdf() {
       return false;
     };
 
-    for (const fileEntry of limitedFiles) {
+    const updateItem = (id, data) => {
+      setFileItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...data } : it)));
+    };
+
+    for (let index = 0; index < limitedFiles.length; index++) {
+      const fileEntry = limitedFiles[index];
+      const itemId = initialItems[index].id;
       let placed = false;
+
+      // Small delay to show processing one by one (makes UI updates visible)
+      await new Promise(resolve => setTimeout(resolve, 100));
 
       // Get original size
       const tempRect = currentPage.rectangles.add({
@@ -267,19 +306,21 @@ function FlowPdf() {
         }
       }
 
-      // If still not placed, add a new page and place it there
+      // If still not placed, check if file can fit on a new page before creating one
       if (!placed) {
-        currentPage = doc.pages.add();
-        const startColumn = 0; // Start from first column on new page
-        const startX = leftMargin + startColumn * columnWidth;
-        const candidate = [
-          topMargin,
-          startX,
-          topMargin + fileHeight,
-          startX + fileWidth,
-        ];
         const usableBottom = pageHeight - bottomMargin;
-        if (candidate[2] <= usableBottom) {
+        // Check if file would fit on a blank page
+        if (fileHeight <= (usableBottom - topMargin) && fileWidth <= columnWidth) {
+          // File CAN fit, so add a new page
+          currentPage = doc.pages.add();
+          const startColumn = 0; // Start from first column on new page
+          const startX = leftMargin + startColumn * columnWidth;
+          const candidate = [
+            topMargin,
+            startX,
+            topMargin + fileHeight,
+            startX + fileWidth,
+          ];
           const rect = currentPage.rectangles.add({
             geometricBounds: candidate,
           });
@@ -287,111 +328,348 @@ function FlowPdf() {
           rect.fit(FitOptions.CONTENT_TO_FRAME);
           placed = true;
         } else {
-          const message = `File "${fileEntry.name}" is too large to fit on any page at original size.`;
-          setStatusMessage(`❌ ${message}`);
+          // File is too large to fit on any page
+          const message = "File is too large to fit on any page at original size.";
+          failedItems.push({ name: fileEntry.name, error: message });
+          updateItem(itemId, { status: "failed", error: message });
         }
       }
 
-      if (placed) placedCount++;
+      if (placed) {
+        placedCount++;
+        successItems.push({ name: fileEntry.name });
+        updateItem(itemId, { status: "success" });
+      }
     }
     // Log for debugging
     console.log(
-      "Setting uploaded files:",
-      limitedFiles.map((f) => f.name)
+      "Upload results:",
+      { success: successItems.length, failed: failedItems.length }
     );
-    setTimeout(() => {
-      setUploadedFiles(limitedFiles.map((f) => f.name));
-    }, 0);
 
-    const successMessage = `Successfully placed ${placedCount} out of ${files.length} file(s) at original size, with no collision.`;
-    setStatusMessage(`✅ ${successMessage}`);
+    const successMessage = `Placed ${placedCount} of ${files.length} files. ${failedItems.length > 0 ? failedItems.length + ' failed.' : ''}`;
+    showToast(successMessage, placedCount > 0 ? "success" : "error");
   };
 
-  return (
-    <div>
-      <button onClick={fileClick}>Upload</button>
+  // Calculate file counts
+  const uploadedFiles = fileItems.filter(f => f.status === "success");
+  const failedFiles = fileItems.filter(f => f.status === "failed");
+  const displayFiles = activeTab === "uploaded" ? uploadedFiles : failedFiles;
 
-      {statusMessage && (
-        <div
-          style={{
-            marginTop: 8,
-            padding: 8,
-            backgroundColor: statusMessage.includes("❌")
-              ? "#ffebee"
-              : statusMessage.includes("⚠️")
-              ? "#fff3e0"
-              : "#e8f5e8",
-            border: `1px solid ${
-              statusMessage.includes("❌")
-                ? "#f44336"
-                : statusMessage.includes("⚠️")
-                ? "#ff9800"
-                : "#4caf50"
-            }`,
-            borderRadius: 4,
-            fontSize: 14,
-            position: "relative",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}
-        >
-          <span>{statusMessage}</span>
+  return (
+    <div style={{
+      background: "#f8f9fa",
+      height: "100vh",
+      display: "flex",
+      flexDirection: "column",
+    }}>
+      {/* Dark Blue Header */}
+      <div style={{
+        background: "linear-gradient(135deg, #0c4a6e, #38bdf8)",
+        padding: "15px 15px",
+      }}>
+        <h2 style={{
+          margin: 0,
+          color: "#ffffff",
+          fontSize: 18,
+          fontWeight: 600,
+          letterSpacing: 0.3,
+        }}>FlowPDF</h2>
+      </div>
+
+      {/* White Content Area */}
+      <div style={{
+        flex: 1,
+        background: "#ffffff",
+        padding: 12,
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+      }}>
+        {/* Upload Button */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", marginBottom: 12 }}>
           <button
-            onClick={() => setStatusMessage("")}
+            onClick={fileClick}
+            onMouseEnter={() => setUploadHover(true)}
+            onMouseLeave={() => { setUploadHover(false); setUploadActive(false); }}
+            onMouseDown={() => setUploadActive(true)}
+            onMouseUp={() => setUploadActive(false)}
             style={{
-              background: "none",
+              padding: "10px 20px",
+              background: uploadHover || uploadActive 
+                ? "#38bdf8" 
+                : "#e0f2fe",
+              color: uploadHover || uploadActive ? "#ffffff" : "#0c4a6e",
+              borderRadius: 20,
               border: "none",
-              fontSize: 16,
               cursor: "pointer",
-              padding: "0 4px",
-              marginLeft: 8,
-              color: statusMessage.includes("❌")
-                ? "#f44336"
-                : statusMessage.includes("⚠️")
-                ? "#ff9800"
-                : "#4caf50",
-              fontWeight: "bold",
+              fontWeight: 600,
+              fontSize: 14,
+              letterSpacing: 0.3,
+              transition: "all 200ms ease",
+              boxShadow: uploadHover || uploadActive ? "0 4px 12px rgba(56, 189, 248, 0.4)" : "0 2px 4px rgba(0, 0, 0, 0.1)",
             }}
-            title="Close"
+            title="Upload files"
           >
-            ×
+            Upload
           </button>
         </div>
-      )}
 
-      <div style={{ marginTop: 8 }}>
-        <label>Uploaded Files ({uploadedFiles.length}):</label>
-        <div
-          style={{
-            maxHeight: 220, // or whatever fits your panel
+        {/* File List Container - Flex to fill remaining space */}
+        <div style={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          border: "1px solid #e0e0e0",
+          borderRadius: 8,
+          background: "#fafafa",
+          overflow: "hidden",
+        }}>
+          {/* Tabs Header - Standard Tab Bar Design */}
+          <div style={{
+            display: "flex",
+            background: "#ffffff",
+            borderBottom: "2px solid #e5e7eb",
+          }}>
+            <button
+              onClick={() => setActiveTab("uploaded")}
+              style={{
+                flex: 1,
+                padding: "12px 16px",
+                background: activeTab === "uploaded" ? "#38bdf8" : "#e0f2fe",
+                border: "none",
+                borderRadius: 8,
+                cursor: "pointer",
+                fontWeight: 600,
+                fontSize: 13,
+                color: activeTab === "uploaded" ? "#ffffff" : "#0c4a6e",
+                transition: "all 200ms ease",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                margin: 8,
+                boxShadow: activeTab === "uploaded" ? "0 2px 6px rgba(56, 189, 248, 0.4)" : "none",
+              }}
+            >
+              <span>Uploaded Files </span>
+              {uploadedFiles.length > 0 && (
+                <span style={{
+                  background: activeTab === "uploaded" ? "#38bdf8" : "#e5e7eb",
+                  color: activeTab === "uploaded" ? "#ffffff" : "#6b7280",
+                  padding: "2px 8px",
+                  borderRadius: 12,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  minWidth: 20,
+                  textAlign: "center",
+                }}>
+                  ({uploadedFiles.length})
+                </span>
+              )}
+            </button>
+            <button
+              onClick={() => setActiveTab("failed")}
+              style={{
+                flex: 1,
+                padding: "12px 16px",
+                background: activeTab === "failed" ? "#38bdf8" : "#e0f2fe",
+                border: "none",
+                borderRadius: 8,
+                cursor: "pointer",
+                fontWeight: 600,
+                fontSize: 13,
+                color: activeTab === "failed" ? "#ffffff" : "#0c4a6e",
+                transition: "all 200ms ease",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                margin: 8,
+                boxShadow: activeTab === "failed" ? "0 2px 6px rgba(56, 189, 248, 0.4)" : "none",
+              }}
+            >
+              <span>Failed Files </span>
+              {failedFiles.length > 0 && (
+                <span style={{
+                  background: activeTab === "failed" ? "#38bdf8" : "#e5e7eb",
+                  color: activeTab === "failed" ? "#ffffff" : "#6b7280",
+                  padding: "2px 8px",
+                  borderRadius: 12,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  minWidth: 20,
+                  textAlign: "center",
+                }}>
+                  ({failedFiles.length})
+                </span>
+              )}
+            </button>
+          </div>
+
+          {/* File List Content - Scrollable */}
+          <div style={{
+            flex: 1,
             overflowY: "auto",
-            background: "#222",
-            borderRadius: 4,
-            padding: "8px 4px",
-            marginTop: 4,
-            border: "1px solid #444",
-          }}
-        >
-          <ul style={{ margin: 0, padding: 0, listStyle: "decimal inside" }}>
-            {uploadedFiles.map((name, idx) => (
-              <li
-                key={idx}
+            padding: 12,
+          }}>
+            {displayFiles.length === 0 && (
+              <div style={{
+                padding: "40px 20px",
+                textAlign: "center",
+                color: "#9e9e9e",
+                fontSize: 13,
+              }}>
+                {activeTab === "uploaded" ? "No uploaded files yet." : "No failed files."}
+              </div>
+            )}
+            {displayFiles.map((file) => (
+              <div
+                key={file.id}
                 style={{
-                  color: "#fff",
-                  fontSize: 13,
-                  marginBottom: 2,
-                  wordBreak: "break-all",
-                  background: "none",
-                  border: "none",
-                  padding: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "10px",
+                  borderRadius: 6,
+                  background: "#ffffff",
+                  border: "1px solid #e8e8e8",
+                  marginBottom: 8,
+                  transition: "all 150ms ease",
                 }}
               >
-                {name}
-              </li>
+                {/*<div style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 6,
+                  background: file.status === "failed" 
+                    ? "linear-gradient(135deg, #ffebee, #ffcdd2)"
+                    : "linear-gradient(135deg, #e3f2fd, #bbdefb)",
+                  border: file.status === "failed" ? "1px solid #ef5350" : "1px solid #90caf9",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 16,
+                  flex: "0 0 auto",
+                }}>
+                  📄
+                </div>*/}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{
+                    fontSize: 12,
+                    fontWeight: 500,
+                    whiteSpace: "nowrap",
+                    textOverflow: "ellipsis",
+                    overflow: "hidden",
+                    color: "#212121",
+                    marginBottom: 2,
+                  }}>
+                    {file.name}
+                  </div>
+                  <div style={{ fontSize: 10, color: "#757575" }}>
+                    {typeof file.size === "number" ? `${(file.size / (1024 * 1024)).toFixed(2)} MB` : ""}
+                  </div>
+                  {file.status === "failed" && file.error && (
+                    <div style={{
+                      fontSize: 10,
+                      color: "#d32f2f",
+                      marginTop: 3,
+                      background: "#ffebee",
+                      padding: "3px 6px",
+                      borderRadius: 3,
+                    }}>
+                      {file.error}
+                    </div>
+                  )}
+                </div>
+                <div style={{
+                  fontSize: 16,
+                  flex: "0 0 auto",
+                }}>
+                  {file.status === "success" ? "✅" : file.status === "failed" ? "❌" : "⏳"}
+                </div>
+              </div>
             ))}
-          </ul>
+          </div>
         </div>
+      </div>
+
+      {/* Blue Footer */}
+      <div style={{
+        background: "linear-gradient(135deg, #0c4a6e, #38bdf8)",
+        padding: "10px 16px",
+        color: "#ffffff",
+        fontSize: 11,
+        textAlign: "center",
+      }}>
+        FlowPDF Plugin v1.0
+      </div>
+
+      {/* Toast Notifications Container */}
+      <div style={{
+        position: "fixed",
+        bottom: 20,
+        right: -12,
+        zIndex: 9999,
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        maxWidth: 200,
+        width: "100%",
+        alignItems: "flex-end",
+        paddingRight: 20,
+      }}>
+        {toasts.map((toast) => {
+          const colors = {
+            success: { bg: "#10b981", border: "#059669" },
+            error: { bg: "#ef4444", border: "#dc2626" },
+            warning: { bg: "#f59e0b", border: "#d97706" },
+            info: { bg: "#3b82f6", border: "#2563eb" }
+          };
+          const color = colors[toast.type] || colors.info;
+
+          return (
+            <div
+              key={toast.id}
+              style={{
+                background: color.bg,
+                border: `2px solid ${color.border}`,
+                borderRadius: 6,
+                padding: "8px 12px",
+                boxShadow: "0 3px 10px rgba(0,0,0,0.3)",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                color: "#ffffff",
+                minWidth: 200,
+              }}
+            >
+              <div style={{ flex: 1, fontSize: 11, fontWeight: 500 }}>
+                {toast.message}
+              </div>
+              <button
+                onClick={() => removeToast(toast.id)}
+                style={{
+                  background: "rgba(255,255,255,0.2)",
+                  border: "none",
+                  color: "#ffffff",
+                  fontSize: 14,
+                  cursor: "pointer",
+                  width: 20,
+                  height: 20,
+                  borderRadius: "50%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontWeight: "bold",
+                }}
+                title="Close"
+              >
+                ×
+              </button>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

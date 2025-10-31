@@ -23,7 +23,7 @@
       "type": "panel",
       "id": "demos",
       "label": {
-        "default": "React Panel"
+        "default": "FlowPdf"
       },
       "minimumSize": {
         "width": 230,
@@ -34,12 +34,12 @@
         "height": 2000
       },
       "preferredDockedSize": {
-        "width": 230,
-        "height": 300
+        "width": 288,
+        "height": 375
       },
       "preferredFloatingSize": {
-        "width": 230,
-        "height": 300
+        "width": 288,
+        "height": 375
       },
       "icons": [
         {
