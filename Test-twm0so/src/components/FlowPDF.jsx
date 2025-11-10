@@ -96,6 +96,59 @@ function FlowPdf() {
   const [uploadHover, setUploadHover] = useState(false);
   const [uploadActive, setUploadActive] = useState(false);
   const [activeTab, setActiveTab] = useState("uploaded"); // 'uploaded' or 'failed'
+  const [hoveredTab, setHoveredTab] = useState(null);
+  const primaryBlue = "#38bdf8";
+  const getTabStyle = (tab) => {
+    const isActive = activeTab === tab;
+    const isHover = hoveredTab === tab;
+    return {
+      flex: 1,
+      padding: "9px 12px",
+      background: isHover ? primaryBlue : isActive ? "#f0faff" : "#ffffff",
+      backgroundColor: isHover ? primaryBlue : isActive ? "#f0faff" : "#ffffff",
+      backgroundImage: "none",
+      border: isHover ? "2px solid transparent" : `2px solid ${primaryBlue}`,
+      borderRadius: 20,
+      cursor: "pointer",
+      fontWeight: 600,
+      fontSize: 13,
+      color: isHover ? "#ffffff" : primaryBlue,
+      transition: "all 200ms ease",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 8,
+      margin: 8,
+      outline: "none",
+      boxShadow: !isHover && isActive ? "0 0 0 2px rgba(56, 189, 248, 0.25)" : "none",
+      boxSizing: "border-box",
+      userSelect: "none",
+    };
+  };
+  const getBadgeStyle = (tab) => {
+    const isActive = activeTab === tab;
+    const isHover = hoveredTab === tab;
+    return {
+      background: isHover
+        ? "rgba(255, 255, 255, 0.2)"
+        : isActive
+        ? "rgba(56, 189, 248, 0.15)"
+        : "#ffffff",
+      color: isHover ? "#ffffff" : primaryBlue,
+      padding: "2px 8px",
+      borderRadius: 12,
+      fontSize: 11,
+      fontWeight: 700,
+      minWidth: 20,
+      textAlign: "center",
+    };
+  };
+  const handleKeyActivate = (event, handler) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      handler();
+    }
+  };
 
   // Toast notification helper
   const showToast = (message, type = "info") => {
@@ -388,31 +441,40 @@ function FlowPdf() {
       }}>
         {/* Upload Button */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", marginBottom: 12 }}>
-          <button
-            onClick={fileClick}
+          <div
+            role="button"
+            tabIndex={0}
             onMouseEnter={() => setUploadHover(true)}
             onMouseLeave={() => { setUploadHover(false); setUploadActive(false); }}
             onMouseDown={() => setUploadActive(true)}
             onMouseUp={() => setUploadActive(false)}
+            onClick={fileClick}
+            onKeyDown={(event) => handleKeyActivate(event, fileClick)}
             style={{
-              padding: "10px 20px",
-              background: uploadHover || uploadActive 
-                ? "#38bdf8" 
-                : "#e0f2fe",
-              color: uploadHover || uploadActive ? "#ffffff" : "#0c4a6e",
+              padding: "9px 12px",
+              background: uploadHover || uploadActive ? primaryBlue : "#ffffff",
+              backgroundColor: uploadHover || uploadActive ? primaryBlue : "#ffffff",
+              backgroundImage: "none",
+              color: uploadHover || uploadActive ? "#ffffff" : primaryBlue,
               borderRadius: 20,
-              border: "none",
+              border: uploadHover || uploadActive ? "2px solid transparent" : `2px solid ${primaryBlue}`,
               cursor: "pointer",
               fontWeight: 600,
               fontSize: 14,
               letterSpacing: 0.3,
               transition: "all 200ms ease",
-              boxShadow: uploadHover || uploadActive ? "0 4px 12px rgba(56, 189, 248, 0.4)" : "0 2px 4px rgba(0, 0, 0, 0.1)",
+              outline: "none",
+              boxShadow: "none",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              boxSizing: "border-box",
+              userSelect: "none",
             }}
             title="Upload files"
           >
             Upload
-          </button>
+          </div>
         </div>
 
         {/* File List Container - Flex to fill remaining space */}
@@ -431,80 +493,38 @@ function FlowPdf() {
             background: "#ffffff",
             borderBottom: "2px solid #e5e7eb",
           }}>
-            <button
+            <div
+              role="tab"
+              tabIndex={0}
               onClick={() => setActiveTab("uploaded")}
-              style={{
-                flex: 1,
-                padding: "12px 16px",
-                background: activeTab === "uploaded" ? "#38bdf8" : "#e0f2fe",
-                border: "none",
-                borderRadius: 8,
-                cursor: "pointer",
-                fontWeight: 600,
-                fontSize: 13,
-                color: activeTab === "uploaded" ? "#ffffff" : "#0c4a6e",
-                transition: "all 200ms ease",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 8,
-                margin: 8,
-                boxShadow: activeTab === "uploaded" ? "0 2px 6px rgba(56, 189, 248, 0.4)" : "none",
-              }}
+              onMouseEnter={() => setHoveredTab("uploaded")}
+              onMouseLeave={() => setHoveredTab(null)}
+              onKeyDown={(event) => handleKeyActivate(event, () => setActiveTab("uploaded"))}
+              style={getTabStyle("uploaded")}
             >
               <span>Uploaded Files </span>
               {uploadedFiles.length > 0 && (
-                <span style={{
-                  background: activeTab === "uploaded" ? "#38bdf8" : "#e5e7eb",
-                  color: activeTab === "uploaded" ? "#ffffff" : "#6b7280",
-                  padding: "2px 8px",
-                  borderRadius: 12,
-                  fontSize: 11,
-                  fontWeight: 700,
-                  minWidth: 20,
-                  textAlign: "center",
-                }}>
+                <span style={getBadgeStyle("uploaded")}>
                   ({uploadedFiles.length})
                 </span>
               )}
-            </button>
-            <button
+            </div>
+            <div
+              role="tab"
+              tabIndex={0}
               onClick={() => setActiveTab("failed")}
-              style={{
-                flex: 1,
-                padding: "12px 16px",
-                background: activeTab === "failed" ? "#38bdf8" : "#e0f2fe",
-                border: "none",
-                borderRadius: 8,
-                cursor: "pointer",
-                fontWeight: 600,
-                fontSize: 13,
-                color: activeTab === "failed" ? "#ffffff" : "#0c4a6e",
-                transition: "all 200ms ease",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 8,
-                margin: 8,
-                boxShadow: activeTab === "failed" ? "0 2px 6px rgba(56, 189, 248, 0.4)" : "none",
-              }}
+              onMouseEnter={() => setHoveredTab("failed")}
+              onMouseLeave={() => setHoveredTab(null)}
+              onKeyDown={(event) => handleKeyActivate(event, () => setActiveTab("failed"))}
+              style={getTabStyle("failed")}
             >
               <span>Failed Files </span>
               {failedFiles.length > 0 && (
-                <span style={{
-                  background: activeTab === "failed" ? "#38bdf8" : "#e5e7eb",
-                  color: activeTab === "failed" ? "#ffffff" : "#6b7280",
-                  padding: "2px 8px",
-                  borderRadius: 12,
-                  fontSize: 11,
-                  fontWeight: 700,
-                  minWidth: 20,
-                  textAlign: "center",
-                }}>
+                <span style={getBadgeStyle("failed")}>
                   ({failedFiles.length})
                 </span>
               )}
-            </button>
+            </div>
           </div>
 
           {/* File List Content - Scrollable */}
@@ -517,7 +537,6 @@ function FlowPdf() {
               <div style={{
                 padding: "40px 20px",
                 textAlign: "center",
-                color: "#9e9e9e",
                 fontSize: 13,
               }}>
                 {activeTab === "uploaded" ? "No uploaded files yet." : "No failed files."}
@@ -561,7 +580,6 @@ function FlowPdf() {
                     whiteSpace: "nowrap",
                     textOverflow: "ellipsis",
                     overflow: "hidden",
-                    color: "#212121",
                     marginBottom: 2,
                   }}>
                     {file.name}

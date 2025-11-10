@@ -1,0 +1,16 @@
+.btn-outline-blue {
+  background-color: white;          /* White background */
+  color: #38bdf8;                   /* Blue text */
+  border: 2px solid #38bdf8;        /* Blue border (outline) */
+  border-radius: 8px;               /* Rounded corners */
+  padding: 8px 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;        /* Smooth hover effect */
+}
+
+/* Hover effect */
+.btn-outline-blue:hover {
+  background-color: #38bdf8;        /* Blue background */
+  color: white;                     /* White text */
+}
