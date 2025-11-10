@@ -164,7 +164,6 @@ function FlowPdf() {
     setToasts(prev => prev.filter(t => t.id !== id));
   };
   const fileClick = async (e) => {
-    //  setUploadedFiles(["karthik", "salugu"]);
     //setStatusMessage("🔄 Processing files...");
     const fs = require("uxp").storage.localFileSystem;
     const fileEntries = await fs.getFileForOpening({
