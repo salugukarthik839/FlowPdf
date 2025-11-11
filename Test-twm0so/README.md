@@ -1,67 +1,273 @@
-# Introduction
+# FlowPDF - InDesign Plugin
 
-This plugin is a good place to get started when building a UXP plugin using React. It comes defined with all the dependencies that you'll need to get started. As this is a React project, you'll need to do some initial configuration before this will be usable in InDesign.
+A powerful Adobe InDesign UXP plugin that streamlines the process of uploading and placing multiple PDF and image files into InDesign documents with intelligent column-based placement.
 
-## Documentation
+## Overview
 
-- [Framework prerequisites](https://developer.adobe.com/indesign/uxp/introduction/essentials/tech-stack/#frameworks)
+FlowPDF is a React-based InDesign plugin that automates the placement of multiple files (PDF, PNG, JPG, JPEG) into InDesign documents. It features smart column-based placement logic that ensures files are placed sequentially without overlapping, respecting document margins, columns, and existing content.
 
-## Compatibility
-Since InDesign v18.5 and UXP v7.1.
+## Features
 
-## Getting started
+### 🚀 Core Functionality
+- **Bulk File Upload**: Upload up to 50 files at once
+- **Smart Placement**: Automatically places files in columns, moving forward sequentially
+- **Document-Aware**: Tracks uploaded files per document, maintaining separate state for each document
+- **Template Support**: Distinguishes between template/default files and uploaded files
+- **Column Management**: Intelligently fills columns and moves to the next when full
+- **Page Creation**: Automatically creates new pages when needed
 
-### Pre-requisites
+### 📊 User Interface
+- **Tabbed Interface**: Separate views for uploaded and failed files
+- **Real-time Status**: Visual indicators for pending, success, and failed uploads
+- **Toast Notifications**: User-friendly notifications for upload results
+- **File Information**: Displays file names and sizes
+- **Error Handling**: Clear error messages for failed uploads
 
-You need
-1. [NodeJS](https://nodejs.org/en_) v17.0 or below to build the plugin
-2. (Optional) [Yarn package manager](https://yarnpkg.com/getting-started/install)
-3. UXP Developer Tools (UDT)
+### 🎯 Advanced Features
+- **Forward-Only Placement**: Never checks backward, ensuring efficient sequential placement
+- **Batch Processing**: Processes multiple files in sequence with progress tracking
+- **Deletion Detection**: Automatically detects and handles deleted files
+- **Overlap Prevention**: Ensures no files overlap with existing content (template or uploaded)
+- **Column Fullness Detection**: Automatically moves to next column when current is full
 
-### Install dependencies
+## Prerequisites
 
-Open the terminal in the root of this project, and use `npm` to install the various dependencies needed:
+- **Node.js**: v17.0 or below (required for building)
+- **Adobe InDesign**: v18.5 or later
+- **UXP Developer Tools (UDT)**: For loading and testing the plugin
+- **npm** or **yarn**: Package manager
 
+## Installation
+
+### 1. Clone or Download the Project
+
+```bash
+git clone <repository-url>
+cd FlowPDF
 ```
+
+### 2. Install Dependencies
+
+```bash
 npm install
 ```
 
-<b>Optional</b></br>
-If you prefer to use `yarn`, after you generate the `package-lock.json` file you can run the following line to import dependencies to a `yarn.lock` file: 
-
-```
-yarn import
+**Optional**: If you prefer Yarn:
+```bash
+yarn import  # After npm install
 ```
 
-### Build plugin
+### 3. Build the Plugin
 
-There are two ways to build this plugin. Choose the one that suits your working style the best:
+**For Development** (auto-rebuild on changes):
+```bash
+npm run watch
+```
 
-1. Automatically build your plugin on every change (best suited for active development that requires rapid and iterative changes): </br>
-In your terminal, run `yarn watch` (or `npm run watch`) from the root folder. 
-2. Create a one-time build: </br>
-In your terminal, run `yarn build` (or `npm run build`) from the root folder. 
+**For Production** (one-time build):
+```bash
+npm run build
+```
 
-Notice that a `dist` folder, with transpiled JS code, is created after this step.
+This creates a `dist` folder with the transpiled code.
 
-### Load plugin in the application
-Follow the steps below in UDT,
-1. Make sure InDesign application is running and you can see it under 'Connected apps'
-2. Add this plugin to UDT, by selecting 'react-starter' from the 'Create Plugin' dialog. Or use the `plugin/manifest.json` to 'Add plugin' to the workspace.
-3. From the plugin's action menu •••
-    - Configure the `/dist` folder by using `More` -> `Advanced`.
-    - Select `Load` to view the plugin inside your application.
-    - (Optional) Select `Watch` to reload the plugin automatically every time the code in `/dist` changes.
+### 4. Load Plugin in InDesign
 
-Note that, the plugin will be based on the last transpiled code within the `dist` folder. Manage and trigger the 'build' process by following the instructions from the previous section.
+1. Open **UXP Developer Tools (UDT)**
+2. Ensure InDesign is running and visible under "Connected apps"
+3. Add the plugin:
+   - Use the `plugin/manifest.json` file to "Add plugin" to the workspace
+   - Or select the plugin from the "Create Plugin" dialog
+4. Configure the plugin:
+   - Go to plugin's action menu (•••)
+   - Select `More` → `Advanced`
+   - Configure the `/dist` folder as the plugin source
+5. Load the plugin:
+   - Click `Load` to view the plugin in InDesign
+   - (Optional) Click `Watch` to auto-reload on code changes
+
+## Usage
+
+### Basic Workflow
+
+1. **Open InDesign**: Ensure you have an active InDesign document open
+2. **Open FlowPDF Panel**: The plugin panel should appear in InDesign
+3. **Upload Files**:
+   - Click the "Upload" button
+   - Select one or more files (PDF, PNG, JPG, JPEG)
+   - Files are automatically sorted alphabetically
+4. **Monitor Progress**: Watch the real-time status updates
+5. **Review Results**: Check the "Uploaded Files" or "Failed Files" tabs
+
+### File Placement Logic
+
+FlowPDF uses intelligent placement logic:
+
+- **Column-Based**: Files are placed sequentially in columns from left to right
+- **Forward-Only**: Never checks previous columns or pages
+- **Template-Aware**: Respects existing template files, placing new files after them
+- **Auto-Advance**: Automatically moves to the next column when current is full
+- **Page Creation**: Creates new pages when all columns on current page are full
+
+### Document State Management
+
+- Each document maintains its own state
+- Uploaded file tracking is document-specific
+- Active column position is saved per document
+- Switching documents preserves each document's state independently
+
+## Project Structure
+
+```
+FlowPDF/
+├── src/
+│   ├── components/
+│   │   └── FlowPDF.jsx          # Main plugin component
+│   ├── controllers/
+│   │   └── PanelController.jsx  # Panel controller
+│   ├── panels/
+│   │   └── Demos.jsx           # Panel demo component
+│   ├── index.jsx               # Entry point
+│   └── FlowPDF.css             # Styles
+├── plugin/
+│   ├── manifest.json           # Plugin manifest
+│   └── index.html              # Plugin HTML
+├── dist/                       # Built files (generated)
+├── package.json                # Dependencies and scripts
+├── webpack.config.js           # Webpack configuration
+└── README.md                   # This file
+```
+
+## Development
+
+### Available Scripts
+
+- `npm run watch` - Watch mode for development (auto-rebuild)
+- `npm run build` - One-time production build
+- `npm run uxp:load` - Load plugin in InDesign
+- `npm run uxp:reload` - Reload plugin
+- `npm run uxp:watch` - Auto-reload on file changes
+- `npm run uxp:debug` - Debug plugin
+
+### Code Architecture
+
+The plugin is built with:
+- **React 16.8+**: Component-based UI
+- **Custom Hooks**: `useToast`, `useDocumentState` for state management
+- **Memoization**: Optimized with `useMemo` and `useCallback`
+- **Component Extraction**: Reusable `FileItem` and `Toast` components
+
+### Key Components
+
+- **FlowPDF**: Main component handling file uploads and placement
+- **useToast**: Custom hook for notification management
+- **useDocumentState**: Custom hook for document-specific state
+- **FileItem**: Memoized component for displaying file information
+- **Toast**: Memoized component for notifications
+
+## Configuration
+
+### Constants
+
+Key constants can be modified in `src/components/FlowPDF.jsx`:
+
+- `MAX_FILES_PER_BATCH`: Maximum files per upload (default: 50)
+- `COLUMN_FULL_THRESHOLD`: Minimum space required in points (default: 50)
+- `TOAST_AUTO_DISMISS_MS`: Toast notification duration (default: 5000ms)
 
 ## Troubleshooting
 
-If you see errors with `npm install`, reinstall the project dependencies by following these steps
-- Delete `node_modules/*` from the root folder.
-- Delete `package-lock.json` or `yarn.lock` file. 
-- Staying in the root directory, run `npm install` again and this will regenerate your `package-lock.json` file.
+### Build Issues
 
+**Problem**: Errors during `npm install`
+```bash
+# Solution:
+rm -rf node_modules
+rm package-lock.json
+npm install
+```
 
-After running `yarn import` if you end up with the error `Lockfile already exists, not importing.`, then it is likely due to an already existing `yarn.lock` in your project. In such a case, you can either delete the lock file to generate a new `yarn.lock` or continue with the Build Process steps.
+**Problem**: Lockfile conflicts with Yarn
+- Delete existing `yarn.lock` if present
+- Or continue with npm instead
 
+### Plugin Loading Issues
+
+1. **Plugin not appearing**: 
+   - Ensure `/dist` folder is configured correctly in UDT
+   - Check that build completed successfully
+   - Verify InDesign version is 18.5+
+
+2. **Files not placing**:
+   - Ensure document has proper margins and columns configured
+   - Check that files are not too large for the page
+   - Verify document is not locked or read-only
+
+3. **State not persisting**:
+   - Document state is per-document based on document name
+   - Switching documents loads the correct state automatically
+
+### Common Errors
+
+- **"No active document open"**: Open an InDesign document first
+- **"Could not identify document"**: Ensure document has a valid name
+- **"File too large"**: File exceeds page dimensions
+
+## Technical Details
+
+### File Format Support
+- PDF (`.pdf`)
+- PNG (`.png`)
+- JPEG (`.jpg`, `.jpeg`)
+
+### Placement Algorithm
+
+1. **Initialization**: Detects deleted files and initializes active column
+2. **Batch Processing**: Processes files sequentially
+3. **Placement Strategy**:
+   - Try current page/column first
+   - Try forward pages if needed
+   - Create new page if necessary
+4. **State Update**: Updates document state after each successful placement
+
+### Performance Optimizations
+
+- Memoized computed values
+- Callback memoization for event handlers
+- Component memoization to prevent unnecessary re-renders
+- Efficient batch processing with progress tracking
+
+## Compatibility
+
+- **InDesign**: v18.5+
+- **UXP**: v7.1+
+- **Node.js**: v17.0 or below (for building)
+- **React**: 16.8.6+
+
+## License
+
+Apache-2.0
+
+## Contributing
+
+Contributions are welcome! Please ensure:
+- Code follows existing patterns
+- Components are properly memoized
+- State management uses custom hooks where appropriate
+- UI remains consistent with existing design
+
+## Support
+
+For issues, questions, or contributions, please refer to the project repository.
+
+## Version History
+
+- **v1.0.0**: Initial release with core functionality
+  - Bulk file upload
+  - Column-based placement
+  - Document-specific state management
+  - Template file awareness
+
+---
+
+**Note**: This plugin requires Adobe InDesign and UXP Developer Tools for development and testing.

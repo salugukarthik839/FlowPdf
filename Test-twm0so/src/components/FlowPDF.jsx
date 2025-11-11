@@ -1,118 +1,325 @@
-import React, { useState } from "react";
-const { storage } = require("uxp");
+import React, { useState, useRef, useMemo, useCallback } from "react";
 const { app, FitOptions, MeasurementUnits, RulerOrigin } = require("indesign");
 
-// UXP-compatible alert function
-const showAlert = (message) => {
-  try {
-    // Try standard alert first
-    if (typeof alert !== "undefined") {
-      alert(message);
-      return;
-    }
-  } catch (e) {
-    console.log("Standard alert failed:", e);
-  }
+// Constants
+const PRIMARY_BLUE = "#38bdf8";
+const MAX_FILES_PER_BATCH = 50;
+const COLUMN_FULL_THRESHOLD = 50;
+const TOAST_AUTO_DISMISS_MS = 5000;
 
-  try {
-    // Try InDesign dialog
-    if (app && app.dialogs) {
-      app.dialogs
-        .add({
-          name: "FlowPDF Alert",
-          canCancel: false,
-          dialogColumns: [
-            {
-              staticTexts: [
-                {
-                  staticLabel: message,
-                },
-              ],
-            },
-          ],
-        })
-        .show();
-      return;
-    }
-  } catch (e) {
-    console.log("InDesign dialog failed:", e);
-  }
-
-  // Fallback to console
-  console.log("ALERT:", message);
-};
-
-// Rectangle class for geometry
-function Rectangle(x, y, width, height) {
-  this.x = x;
-  this.y = y;
-  this.width = width;
-  this.height = height;
-  this.right = x + width;
-  this.bottom = y + height;
-}
-
-Rectangle.prototype.intersects = function (other) {
-  return !(
-    other.x >= this.right ||
-    other.right <= this.x ||
-    other.y >= this.bottom ||
-    other.bottom <= this.y
-  );
-};
-
-Rectangle.prototype.clone = function () {
-  return new Rectangle(this.x, this.y, this.width, this.height);
-};
-
-Rectangle.prototype.toString = function () {
-  return `[${this.x},${this.y},${this.width},${this.height}]`;
-};
-
-Rectangle.prototype.containsRect = function (other) {
-  return (
-    other.x >= this.x &&
-    other.y >= this.y &&
-    other.right <= this.right &&
-    other.bottom <= this.bottom
-  );
-};
-
-// Helper: check if two rectangles overlap
+// Utility: Check if two rectangles overlap
 function rectsOverlap(r1, r2) {
   return !(
-    (
-      r2[0] >= r1[2] || // r2 top >= r1 bottom
-      r2[2] <= r1[0] || // r2 bottom <= r1 top
-      r2[1] >= r1[3] || // r2 left >= r1 right
-      r2[3] <= r1[1]
-    ) // r2 right <= r1 left
+    r2[0] >= r1[2] || // r2 top >= r1 bottom
+    r2[2] <= r1[0] || // r2 bottom <= r1 top
+    r2[1] >= r1[3] || // r2 left >= r1 right
+    r2[3] <= r1[1]    // r2 right <= r1 left
   );
 }
 
+// Custom Hook: Toast notifications
+function useToast() {
+  const [toasts, setToasts] = useState([]);
+
+  const showToast = useCallback((message, type = "info") => {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, TOAST_AUTO_DISMISS_MS);
+  }, []);
+
+  const removeToast = useCallback((id) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  }, []);
+
+  return { toasts, showToast, removeToast };
+}
+
+// Custom Hook: Document-specific state management
+function useDocumentState() {
+  const [documentData, setDocumentData] = useState({});
+  const activeColumnRef = useRef(null);
+
+  const getCurrentDocumentId = useCallback(() => {
+    try {
+      if (!app.documents.length) return null;
+      const doc = app.activeDocument;
+      return doc.name || doc.fullName || 'default';
+    } catch (e) {
+      return null;
+    }
+  }, []);
+
+  const getAllDocumentIds = useCallback(() => {
+    try {
+      if (!app.documents.length) return [];
+      const docIds = [];
+      for (let i = 0; i < app.documents.length; i++) {
+        const doc = app.documents.item(i);
+        const docId = doc.name || doc.fullName || 'default';
+        docIds.push(docId);
+      }
+      return docIds;
+    } catch (e) {
+      return [];
+    }
+  }, []);
+
+  const getUploadedFileNames = useCallback(() => {
+    const docId = getCurrentDocumentId();
+    if (!docId || !documentData[docId]) return new Set();
+    const fileNamesArray = documentData[docId].uploadedFileNames || [];
+    return new Set(fileNamesArray);
+  }, [documentData, getCurrentDocumentId]);
+
+  const setUploadedFileNames = useCallback((updater) => {
+    const docId = getCurrentDocumentId();
+    if (!docId) return;
+
+    setDocumentData(prev => {
+      const currentArray = prev[docId]?.uploadedFileNames || [];
+      const currentSet = new Set(currentArray);
+      const newSet = typeof updater === 'function' ? updater(currentSet) : updater;
+      const newArray = Array.from(newSet);
+
+      return {
+        ...prev,
+        [docId]: {
+          ...prev[docId],
+          uploadedFileNames: newArray
+        }
+      };
+    });
+  }, [getCurrentDocumentId]);
+
+  const getActiveColumn = useCallback(() => {
+    const docId = getCurrentDocumentId();
+    if (!docId || !documentData[docId]) return null;
+    return documentData[docId].activeColumn || null;
+  }, [documentData, getCurrentDocumentId]);
+
+  const setActiveColumn = useCallback((columnData) => {
+    const docId = getCurrentDocumentId();
+    if (!docId) return;
+
+    setDocumentData(prev => ({
+      ...prev,
+      [docId]: {
+        ...prev[docId],
+        activeColumn: columnData
+      }
+    }));
+
+    activeColumnRef.current = columnData;
+  }, [getCurrentDocumentId]);
+
+  const removeDocumentData = useCallback((docId) => {
+    if (!docId) return;
+    setDocumentData(prev => {
+      const newData = { ...prev };
+      delete newData[docId];
+      return newData;
+    });
+  }, []);
+
+  const cleanupRemovedDocuments = useCallback(() => {
+    const currentDocIds = getAllDocumentIds();
+    setDocumentData(prev => {
+      const newData = {};
+      let hasChanges = false;
+      
+      // Keep only data for documents that still exist
+      for (const docId in prev) {
+        if (currentDocIds.includes(docId)) {
+          newData[docId] = prev[docId];
+        } else {
+          hasChanges = true;
+        }
+      }
+      
+      return hasChanges ? newData : prev;
+    });
+  }, [getAllDocumentIds]);
+
+  return {
+    getCurrentDocumentId,
+    getAllDocumentIds,
+    getUploadedFileNames,
+    setUploadedFileNames,
+    getActiveColumn,
+    setActiveColumn,
+    removeDocumentData,
+    cleanupRemovedDocuments,
+    activeColumnRef
+  };
+}
+
+// Sub-component: File Item
+const FileItem = React.memo(({ file }) => (
+  <div style={{
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "10px",
+    borderRadius: 6,
+    background: "#ffffff",
+    border: "1px solid #e8e8e8",
+    marginBottom: 8,
+    transition: "all 150ms ease",
+  }}>
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{
+        fontSize: 12,
+        fontWeight: 500,
+        whiteSpace: "nowrap",
+        textOverflow: "ellipsis",
+        overflow: "hidden",
+        marginBottom: 2,
+      }}>
+        {file.name}
+      </div>
+      <div style={{ fontSize: 10, color: "#757575" }}>
+        {typeof file.size === "number" ? `${(file.size / (1024 * 1024)).toFixed(2)} MB` : ""}
+      </div>
+      {file.status === "failed" && file.error && (
+        <div style={{
+          fontSize: 10,
+          color: "#d32f2f",
+          marginTop: 3,
+          background: "#ffebee",
+          padding: "3px 6px",
+          borderRadius: 3,
+        }}>
+          {file.error}
+        </div>
+      )}
+    </div>
+    <div style={{ fontSize: 16, flex: "0 0 auto" }}>
+      {file.status === "success" ? "✅" : file.status === "failed" ? "❌" : "⏳"}
+    </div>
+  </div>
+));
+
+// Sub-component: Toast
+const Toast = React.memo(({ toast, onClose }) => {
+  const colors = {
+    success: { bg: "#10b981", border: "#059669" },
+    error: { bg: "#ef4444", border: "#dc2626" },
+    warning: { bg: "#f59e0b", border: "#d97706" },
+    info: { bg: "#3b82f6", border: "#2563eb" }
+  };
+  const color = colors[toast.type] || colors.info;
+
+  return (
+    <div style={{
+      background: color.bg,
+      border: `2px solid ${color.border}`,
+      borderRadius: 6,
+      padding: "8px 12px",
+      boxShadow: "0 3px 10px rgba(0,0,0,0.3)",
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      color: "#ffffff",
+      minWidth: 200,
+    }}>
+      <div style={{ flex: 1, fontSize: 11, fontWeight: 500 }}>
+        {toast.message}
+      </div>
+      <button
+        onClick={() => onClose(toast.id)}
+        style={{
+          background: "rgba(255,255,255,0.2)",
+          border: "none",
+          color: "#ffffff",
+          fontSize: 14,
+          cursor: "pointer",
+          width: 20,
+          height: 20,
+          borderRadius: "50%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontWeight: "bold",
+        }}
+        title="Close"
+      >
+        ×
+      </button>
+    </div>
+  );
+});
+
 function FlowPdf() {
-  const [fileItems, setFileItems] = useState([]); // {id, name, size, status: 'pending'|'success'|'failed', error?}
-  const [toasts, setToasts] = useState([]); // [{id, message, type: 'success'|'error'|'warning'|'info'}]
+  const [fileItems, setFileItems] = useState([]);
   const [uploadHover, setUploadHover] = useState(false);
   const [uploadActive, setUploadActive] = useState(false);
-  const [activeTab, setActiveTab] = useState("uploaded"); // 'uploaded' or 'failed'
+  const [activeTab, setActiveTab] = useState("uploaded");
   const [hoveredTab, setHoveredTab] = useState(null);
-  const primaryBlue = "#38bdf8";
-  const getTabStyle = (tab) => {
+
+  const { toasts, showToast, removeToast } = useToast();
+  const {
+    getCurrentDocumentId,
+    getAllDocumentIds,
+    getUploadedFileNames,
+    setUploadedFileNames,
+    getActiveColumn,
+    setActiveColumn,
+    removeDocumentData,
+    cleanupRemovedDocuments,
+    activeColumnRef
+  } = useDocumentState();
+
+  // Cleanup document data when documents are closed or activated
+  React.useEffect(() => {
+    const handleDocumentClose = () => {
+      cleanupRemovedDocuments();
+    };
+
+    const handleDocumentActivate = () => {
+      // Also cleanup when switching documents to ensure stale data is removed
+      cleanupRemovedDocuments();
+    };
+
+    if (app) {
+      app.addEventListener("afterClose", handleDocumentClose);
+      app.addEventListener("afterActivate", handleDocumentActivate);
+      return () => {
+        app.removeEventListener("afterClose", handleDocumentClose);
+        app.removeEventListener("afterActivate", handleDocumentActivate);
+      };
+    }
+  }, [cleanupRemovedDocuments]);
+
+  // Memoized file lists
+  const uploadedFiles = useMemo(() => 
+    fileItems.filter(f => f.status === "success"), 
+    [fileItems]
+  );
+  const failedFiles = useMemo(() => 
+    fileItems.filter(f => f.status === "failed"), 
+    [fileItems]
+  );
+  const displayFiles = useMemo(() => 
+    activeTab === "uploaded" ? uploadedFiles : failedFiles,
+    [activeTab, uploadedFiles, failedFiles]
+  );
+
+  // Memoized style functions
+  const getTabStyle = useCallback((tab) => {
     const isActive = activeTab === tab;
     const isHover = hoveredTab === tab;
     return {
       flex: 1,
       padding: "9px 12px",
-      background: isHover ? primaryBlue : isActive ? "#f0faff" : "#ffffff",
-      backgroundColor: isHover ? primaryBlue : isActive ? "#f0faff" : "#ffffff",
-      backgroundImage: "none",
-      border: isHover ? "2px solid transparent" : `2px solid ${primaryBlue}`,
+      backgroundColor: isHover ? PRIMARY_BLUE : isActive ? "#f0faff" : "#ffffff",
+      border: isHover ? "2px solid transparent" : `2px solid ${PRIMARY_BLUE}`,
       borderRadius: 20,
       cursor: "pointer",
       fontWeight: 600,
       fontSize: 13,
-      color: isHover ? "#ffffff" : primaryBlue,
+      color: isHover ? "#ffffff" : PRIMARY_BLUE,
       transition: "all 200ms ease",
       display: "flex",
       alignItems: "center",
@@ -124,17 +331,12 @@ function FlowPdf() {
       boxSizing: "border-box",
       userSelect: "none",
     };
-  };
-  const getBadgeStyle = (tab) => {
-    const isActive = activeTab === tab;
+  }, [activeTab, hoveredTab]);
+
+  const getBadgeStyle = useCallback((tab) => {
     const isHover = hoveredTab === tab;
     return {
-      background: isHover
-        ? "rgba(255, 255, 255, 0.2)"
-        : isActive
-        ? "rgba(56, 189, 248, 0.15)"
-        : "#ffffff",
-      color: isHover ? "#ffffff" : primaryBlue,
+      color: isHover ? "#ffffff" : PRIMARY_BLUE,
       padding: "2px 8px",
       borderRadius: 12,
       fontSize: 11,
@@ -142,42 +344,56 @@ function FlowPdf() {
       minWidth: 20,
       textAlign: "center",
     };
-  };
-  const handleKeyActivate = (event, handler) => {
+  }, [hoveredTab]);
+
+  // Event handlers
+  const handleKeyActivate = useCallback((event, handler) => {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       handler();
     }
-  };
+  }, []);
 
-  // Toast notification helper
-  const showToast = (message, type = "info") => {
-    const id = Date.now();
-    setToasts(prev => [...prev, { id, message, type }]);
-    // Auto-dismiss after 5 seconds
-    setTimeout(() => {
-      setToasts(prev => prev.filter(t => t.id !== id));
-    }, 5000);
-  };
+  const handleTabClick = useCallback((tab) => {
+    setActiveTab(tab);
+  }, []);
 
-  const removeToast = (id) => {
-    setToasts(prev => prev.filter(t => t.id !== id));
-  };
-  const fileClick = async (e) => {
-    //setStatusMessage("🔄 Processing files...");
+  const handleTabMouseEnter = useCallback((tab) => {
+    setHoveredTab(tab);
+  }, []);
+
+  const handleTabMouseLeave = useCallback(() => {
+    setHoveredTab(null);
+  }, []);
+
+  const handleUploadMouseEnter = useCallback(() => {
+    setUploadHover(true);
+  }, []);
+
+  const handleUploadMouseLeave = useCallback(() => {
+    setUploadHover(false);
+    setUploadActive(false);
+  }, []);
+
+  const handleUploadMouseDown = useCallback(() => {
+    setUploadActive(true);
+  }, []);
+
+  const handleUploadMouseUp = useCallback(() => {
+    setUploadActive(false);
+  }, []);
+
+  const updateItem = useCallback((id, data) => {
+    setFileItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...data } : it)));
+  }, []);
+
+  // Main file upload handler
+  const fileClick = useCallback(async () => {
     const fs = require("uxp").storage.localFileSystem;
     const fileEntries = await fs.getFileForOpening({
       types: ["pdf", "png", "jpg", "jpeg"],
       allowMultiple: true,
     });
-
-   //if (
-      //!fileEntries ||
-      //(Array.isArray(fileEntries) && fileEntries.length === 0)
-    //) {
-      //setStatusMessage("❌ No files selected");
-      //return;
-    //}
 
     if (!app.documents.length) {
       showToast("No active document open in InDesign", "error");
@@ -185,15 +401,20 @@ function FlowPdf() {
     }
 
     const doc = app.activeDocument;
+    const docId = getCurrentDocumentId();
+    if (!docId) {
+      showToast("Could not identify document", "error");
+      return;
+    }
+
+    const savedActiveColumn = getActiveColumn();
+    activeColumnRef.current = savedActiveColumn || null;
+
     doc.viewPreferences.horizontalMeasurementUnits = MeasurementUnits.POINTS;
     doc.viewPreferences.verticalMeasurementUnits = MeasurementUnits.POINTS;
     doc.viewPreferences.rulerOrigin = RulerOrigin.PAGE_ORIGIN;
     doc.documentPreferences.facingPages = false;
 
-    // Get the current active page
-    let currentPage = doc.layoutWindows.item(0).activePage;
-
-    // Margins and page size (all in points)
     const marginPrefs = doc.marginPreferences;
     const docPrefs = doc.documentPreferences;
     const topMargin = marginPrefs.top || 0;
@@ -206,82 +427,221 @@ function FlowPdf() {
     const columnCount = marginPrefs.columnCount || 1;
 
     const usableWidth = pageWidth - leftMargin - rightMargin;
-    const columnWidth =
-      (usableWidth - columnGutter * (columnCount - 1)) / columnCount;
+    const columnWidth = (usableWidth - columnGutter * (columnCount - 1)) / columnCount;
     const numColumns = columnCount;
 
     let files = Array.isArray(fileEntries) ? fileEntries : [fileEntries];
-    // Sort files by file name (ascending, case-insensitive)
     files = files.sort((a, b) =>
       a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
     );
-    if (files.length > 50) {
-      const message =
-        "You can only process up to 50 files at a time. Only the first 50 will be used.";
-      showToast(message, "warning");
+
+    if (files.length > MAX_FILES_PER_BATCH) {
+      showToast(
+        `You can only process up to ${MAX_FILES_PER_BATCH} files at a time. Only the first ${MAX_FILES_PER_BATCH} will be used.`,
+        "warning"
+      );
       return;
     }
-    const limitedFiles = files.slice(0, 50);
 
-    // Initialize UI with pending items - APPEND to existing items
+    const limitedFiles = files.slice(0, MAX_FILES_PER_BATCH);
     const initialItems = limitedFiles.map((f, idx) => ({
       id: `${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 8)}`,
       name: f.name,
-      // UXP File entries often expose size; if missing, we'll display "—"
       size: typeof f.size === "number" ? f.size : null,
       status: "pending",
     }));
+
     setFileItems(prev => [...prev, ...initialItems]);
 
     let placedCount = 0;
     const successItems = [];
     const failedItems = [];
 
-    // Function to get existing rectangles on a page
+    // Helper functions for file placement
+    const detectDeletedFiles = () => {
+      const uploadedFileNames = getUploadedFileNames();
+      const currentUploadedFiles = new Set();
+
+      for (let i = 0; i < doc.pages.length; i++) {
+        const page = doc.pages.item(i);
+        for (let j = 0; j < page.rectangles.length; j++) {
+          const rect = page.rectangles.item(j);
+          try {
+            if (rect.graphics && rect.graphics.length > 0) {
+              const graphic = rect.graphics.item(0);
+              if (graphic.itemLink && graphic.itemLink.name) {
+                const fileName = graphic.itemLink.name;
+                if (uploadedFileNames.has(fileName)) {
+                  currentUploadedFiles.add(fileName);
+                }
+              }
+            }
+          } catch (e) {
+            // Continue if we can't get file name
+          }
+        }
+      }
+
+      const deletedFiles = Array.from(uploadedFileNames).filter(name => !currentUploadedFiles.has(name));
+      if (deletedFiles.length > 0) {
+        setUploadedFileNames(prev => {
+          const newSet = new Set(prev);
+          deletedFiles.forEach(name => newSet.delete(name));
+          return newSet;
+        });
+      }
+    };
+
     const getExistingRects = (page) => {
+      const uploadedFileNames = getUploadedFileNames();
       const rects = [];
+
       for (let i = 0; i < page.rectangles.length; i++) {
         const rect = page.rectangles.item(i);
         const gb = rect.geometricBounds;
-        rects.push(gb);
+        let fileName = null;
+
+        try {
+          if (rect.graphics && rect.graphics.length > 0) {
+            const graphic = rect.graphics.item(0);
+            if (graphic.itemLink && graphic.itemLink.name) {
+              fileName = graphic.itemLink.name;
+            }
+          }
+        } catch (e) {
+          // Continue if we can't get file name
+        }
+
+        rects.push({
+          bounds: gb,
+          fileName: fileName,
+          isUploaded: fileName ? uploadedFileNames.has(fileName) : false
+        });
       }
+
       return rects;
     };
 
-    // Function to try placing a file on a specific page
-    const tryPlaceOnPage = async (page, fileEntry, fileWidth, fileHeight) => {
+    const updateActiveColumn = () => {
+      const activePage = doc.layoutWindows.item(0).activePage;
+      const activePageIndex = activePage.documentOffset;
+      const currentPage = doc.pages.item(activePageIndex);
+      const existingRects = getExistingRects(currentPage);
+      const usableBottom = pageHeight - bottomMargin;
+      const uploadedRects = existingRects.filter(rect => rect.isUploaded);
+
+      if (uploadedRects.length === 0) {
+        setActiveColumn({
+          pageIndex: activePageIndex,
+          columnIndex: 0,
+          bottomY: topMargin
+        });
+        return;
+      }
+
+      let highestColumnIndex = -1;
+      let highestColumnBottomY = topMargin - 1;
+
+      for (let col = 0; col < numColumns; col++) {
+        const colStart = leftMargin + col * (columnWidth + columnGutter);
+        const colEnd = colStart + columnWidth;
+        const uploadedRectsInColumn = uploadedRects.filter((rect) => {
+          const bounds = rect.bounds;
+          return bounds[1] < colEnd && bounds[3] > colStart;
+        });
+
+        if (uploadedRectsInColumn.length > 0) {
+          let columnBottom = topMargin;
+          for (const rect of uploadedRectsInColumn) {
+            const bounds = rect.bounds;
+            if (bounds[2] > columnBottom) {
+              columnBottom = bounds[2];
+            }
+          }
+
+          if (col > highestColumnIndex || (col === highestColumnIndex && columnBottom > highestColumnBottomY)) {
+            highestColumnIndex = col;
+            highestColumnBottomY = columnBottom;
+          }
+        }
+      }
+
+      const spaceLeft = usableBottom - highestColumnBottomY;
+      const isColumnFull = spaceLeft < COLUMN_FULL_THRESHOLD;
+
+      let columnData;
+      if (isColumnFull && highestColumnIndex < numColumns - 1) {
+        columnData = {
+          pageIndex: activePageIndex,
+          columnIndex: highestColumnIndex + 1,
+          bottomY: topMargin
+        };
+      } else if (isColumnFull && highestColumnIndex === numColumns - 1) {
+        if (activePageIndex < doc.pages.length - 1) {
+          columnData = {
+            pageIndex: activePageIndex + 1,
+            columnIndex: 0,
+            bottomY: topMargin
+          };
+        } else {
+          columnData = {
+            pageIndex: activePageIndex,
+            columnIndex: highestColumnIndex,
+            bottomY: topMargin
+          };
+        }
+      } else {
+        columnData = {
+          pageIndex: activePageIndex,
+          columnIndex: highestColumnIndex,
+          bottomY: Math.max(topMargin, highestColumnBottomY)
+        };
+      }
+      setActiveColumn(columnData);
+    };
+
+    const tryPlaceOnPage = async (page, fileEntry, fileWidth, fileHeight, startColumn = 0, minY = topMargin) => {
       const usableBottom = pageHeight - bottomMargin;
       const existingRects = getExistingRects(page);
       const columnsNeeded = Math.ceil(fileWidth / columnWidth);
 
-      for (let col = 0; col < numColumns; col++) {
+      for (let col = startColumn; col < numColumns; col++) {
         const columnStart = leftMargin + col * (columnWidth + columnGutter);
         const columnEnd = columnStart + columnsNeeded * columnWidth;
 
-        // 1. Collect and sort rectangles in this column group by top Y
-        const rectsInColumn = existingRects
-          .filter((rect) => rect[1] < columnEnd && rect[3] > columnStart)
-          .sort((a, b) => a[0] - b[0]);
+        if (columnEnd > pageWidth - rightMargin) {
+          continue;
+        }
 
-        // 2. Find all vertical gaps in this column group
-        let lastBottom = topMargin;
+        const rectsInColumn = existingRects
+          .filter((rect) => {
+            const bounds = rect.bounds;
+            return bounds[1] < columnEnd && bounds[3] > columnStart;
+          })
+          .sort((a, b) => a.bounds[0] - b.bounds[0]);
+
+        let searchStartY = (col === startColumn) ? Math.max(topMargin, minY) : topMargin;
+        let lastBottom = searchStartY;
+
         for (let i = 0; i <= rectsInColumn.length; i++) {
-          let nextTop =
-            i < rectsInColumn.length
-              ? rectsInColumn[i][0]
-              : pageHeight - bottomMargin;
-          // Only process positive gaps
-          if (nextTop > lastBottom) {
+          if (i < rectsInColumn.length && rectsInColumn[i].bounds[2] < searchStartY) {
+            lastBottom = Math.max(lastBottom, rectsInColumn[i].bounds[2]);
+            continue;
+          }
+
+          let nextTop = i < rectsInColumn.length
+            ? rectsInColumn[i].bounds[0]
+            : pageHeight - bottomMargin;
+
+          if (nextTop > lastBottom && lastBottom >= searchStartY) {
             let gapHeight = nextTop - lastBottom;
             if (gapHeight >= fileHeight) {
               for (let offset = 0; offset <= 5; offset += 5) {
                 const candidateTop = lastBottom + offset;
                 const candidateBottom = candidateTop + fileHeight;
-                if (
-                  candidateBottom > nextTop ||
-                  candidateBottom > pageHeight - bottomMargin
-                )
+                if (candidateBottom > nextTop || candidateBottom > pageHeight - bottomMargin) {
                   continue;
+                }
                 const candidate = [
                   candidateTop,
                   columnStart,
@@ -290,7 +650,7 @@ function FlowPdf() {
                 ];
                 let overlap = false;
                 for (const r of existingRects) {
-                  if (rectsOverlap(candidate, r)) {
+                  if (rectsOverlap(candidate, r.bounds)) {
                     overlap = true;
                     break;
                   }
@@ -301,34 +661,73 @@ function FlowPdf() {
                   });
                   await rect.place(fileEntry);
                   rect.fit(FitOptions.CONTENT_TO_FRAME);
-                  return true;
+                  return { success: true, columnIndex: col, bottomY: candidateBottom };
                 }
               }
             }
           }
-          // Always update lastBottom to the bottom of the current rectangle if it is greater
-          if (i < rectsInColumn.length && rectsInColumn[i][2] > lastBottom) {
-            lastBottom = rectsInColumn[i][2];
+          if (i < rectsInColumn.length && rectsInColumn[i].bounds[2] > lastBottom) {
+            lastBottom = rectsInColumn[i].bounds[2];
           }
         }
       }
-      return false;
+      return { success: false };
     };
 
-    const updateItem = (id, data) => {
-      setFileItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...data } : it)));
+    const checkColumnFullness = (page, columnIndex) => {
+      const existingRects = getExistingRects(page);
+      const usableBottom = pageHeight - bottomMargin;
+      const colStart = leftMargin + columnIndex * (columnWidth + columnGutter);
+      const colEnd = colStart + columnWidth;
+      const uploadedRectsInColumn = existingRects.filter((rect) => {
+        if (!rect.isUploaded) return false;
+        const bounds = rect.bounds;
+        return bounds[1] < colEnd && bounds[3] > colStart;
+      });
+
+      let columnBottom = topMargin;
+      for (const rect of uploadedRectsInColumn) {
+        const bounds = rect.bounds;
+        if (bounds[2] > columnBottom) {
+          columnBottom = bounds[2];
+        }
+      }
+
+      const spaceLeft = usableBottom - columnBottom;
+      return spaceLeft < COLUMN_FULL_THRESHOLD;
     };
+
+    detectDeletedFiles();
+    updateActiveColumn();
+
+    const initialActiveColumn = activeColumnRef.current || {
+      pageIndex: 0,
+      columnIndex: 0,
+      bottomY: topMargin
+    };
+    let batchPageIndex = initialActiveColumn.pageIndex;
+    let batchColumnIndex = initialActiveColumn.columnIndex;
+    let batchMinY = initialActiveColumn.bottomY;
 
     for (let index = 0; index < limitedFiles.length; index++) {
       const fileEntry = limitedFiles[index];
       const itemId = initialItems[index].id;
       let placed = false;
 
-      // Small delay to show processing one by one (makes UI updates visible)
       await new Promise(resolve => setTimeout(resolve, 100));
 
-      // Get original size
-      const tempRect = currentPage.rectangles.add({
+      let currentPageIndex = batchPageIndex;
+      let currentColumnIndex = batchColumnIndex;
+      let currentMinY = batchMinY;
+
+      if (currentPageIndex >= doc.pages.length) {
+        currentPageIndex = Math.max(0, doc.pages.length - 1);
+        currentColumnIndex = 0;
+        currentMinY = topMargin;
+      }
+
+      const tempPage = doc.pages.item(0);
+      const tempRect = tempPage.rectangles.add({
         geometricBounds: [0, 0, 100, 100],
       });
       await tempRect.place(fileEntry);
@@ -338,49 +737,92 @@ function FlowPdf() {
       const fileWidth = gb[3] - gb[1];
       tempRect.remove();
 
-      // Try to place on current page first
-      placed = await tryPlaceOnPage(
-        currentPage,
-        fileEntry,
-        fileWidth,
-        fileHeight
-      );
+      let result = null;
+      if (currentPageIndex < doc.pages.length) {
+        const pageToTry = doc.pages.item(currentPageIndex);
+        result = await tryPlaceOnPage(pageToTry, fileEntry, fileWidth, fileHeight, currentColumnIndex, currentMinY);
+        placed = result.success;
+      } else {
+        placed = false;
+      }
 
-      // If not placed on current page, try all other pages
-      if (!placed) {
-        // Get the active page index
-        const activePageIndex = currentPage.documentOffset;
-        // Start from the page after the active page
-        for (let i = activePageIndex + 1; i < doc.pages.length; i++) {
-          const page = doc.pages.item(i);
-          placed = await tryPlaceOnPage(page, fileEntry, fileWidth, fileHeight);
-          if (placed) break;
+      if (placed && result && result.success) {
+        setUploadedFileNames(prev => {
+          const newSet = new Set(prev);
+          newSet.add(fileEntry.name);
+          return newSet;
+        });
+        batchPageIndex = currentPageIndex;
+        batchColumnIndex = result.columnIndex;
+        batchMinY = result.bottomY;
+
+        if (checkColumnFullness(doc.pages.item(currentPageIndex), batchColumnIndex) && batchColumnIndex < numColumns - 1) {
+          batchColumnIndex = batchColumnIndex + 1;
+          batchMinY = topMargin;
         }
       }
 
-      // If still not placed, check if file can fit on a new page before creating one
+      if (!placed) {
+        for (let i = batchPageIndex + 1; i < doc.pages.length; i++) {
+          const page = doc.pages.item(i);
+          result = await tryPlaceOnPage(page, fileEntry, fileWidth, fileHeight, 0, topMargin);
+          if (result.success) {
+            placed = true;
+            setUploadedFileNames(prev => {
+              const newSet = new Set(prev);
+              newSet.add(fileEntry.name);
+              return newSet;
+            });
+            batchPageIndex = i;
+            batchColumnIndex = result.columnIndex;
+            batchMinY = result.bottomY;
+
+            if (checkColumnFullness(doc.pages.item(i), batchColumnIndex) && batchColumnIndex < numColumns - 1) {
+              batchColumnIndex = batchColumnIndex + 1;
+              batchMinY = topMargin;
+            }
+            break;
+          }
+        }
+      }
+
       if (!placed) {
         const usableBottom = pageHeight - bottomMargin;
-        // Check if file would fit on a blank page
-        if (fileHeight <= (usableBottom - topMargin) && fileWidth <= columnWidth) {
-          // File CAN fit, so add a new page
-          currentPage = doc.pages.add();
-          const startColumn = 0; // Start from first column on new page
-          const startX = leftMargin + startColumn * columnWidth;
-          const candidate = [
-            topMargin,
-            startX,
-            topMargin + fileHeight,
-            startX + fileWidth,
-          ];
-          const rect = currentPage.rectangles.add({
-            geometricBounds: candidate,
-          });
-          await rect.place(fileEntry);
-          rect.fit(FitOptions.CONTENT_TO_FRAME);
-          placed = true;
+        const usableWidth = pageWidth - leftMargin - rightMargin;
+        const columnsNeeded = Math.ceil(fileWidth / columnWidth);
+        const requiredWidth = columnsNeeded * columnWidth + (columnsNeeded - 1) * columnGutter;
+        
+        // Check if file can fit on a blank page (height and width)
+        if (fileHeight <= (usableBottom - topMargin) && requiredWidth <= usableWidth) {
+          // Try to place using tryPlaceOnPage first to ensure proper placement logic
+          const newPage = doc.pages.add();
+          const newPageIndex = newPage.documentOffset;
+          const placementResult = await tryPlaceOnPage(newPage, fileEntry, fileWidth, fileHeight, 0, topMargin);
+          
+          if (placementResult.success) {
+            placed = true;
+            setUploadedFileNames(prev => {
+              const newSet = new Set(prev);
+              newSet.add(fileEntry.name);
+              return newSet;
+            });
+
+            batchPageIndex = newPageIndex;
+            batchColumnIndex = placementResult.columnIndex;
+            batchMinY = placementResult.bottomY;
+
+            if (checkColumnFullness(doc.pages.item(newPageIndex), batchColumnIndex) && batchColumnIndex < numColumns - 1) {
+              batchColumnIndex = batchColumnIndex + 1;
+              batchMinY = topMargin;
+            }
+          } else {
+            // If tryPlaceOnPage failed, remove the page we just created and mark as failed
+            newPage.remove();
+            const message = "File could not be placed on a new page.";
+            failedItems.push({ name: fileEntry.name, error: message });
+            updateItem(itemId, { status: "failed", error: message });
+          }
         } else {
-          // File is too large to fit on any page
           const message = "File is too large to fit on any page at original size.";
           failedItems.push({ name: fileEntry.name, error: message });
           updateItem(itemId, { status: "failed", error: message });
@@ -393,20 +835,16 @@ function FlowPdf() {
         updateItem(itemId, { status: "success" });
       }
     }
-    // Log for debugging
-    console.log(
-      "Upload results:",
-      { success: successItems.length, failed: failedItems.length }
-    );
+
+    setActiveColumn({
+      pageIndex: batchPageIndex,
+      columnIndex: batchColumnIndex,
+      bottomY: batchMinY
+    });
 
     const successMessage = `Placed ${placedCount} of ${files.length} files. ${failedItems.length > 0 ? failedItems.length + ' failed.' : ''}`;
     showToast(successMessage, placedCount > 0 ? "success" : "error");
-  };
-
-  // Calculate file counts
-  const uploadedFiles = fileItems.filter(f => f.status === "success");
-  const failedFiles = fileItems.filter(f => f.status === "failed");
-  const displayFiles = activeTab === "uploaded" ? uploadedFiles : failedFiles;
+  }, [getCurrentDocumentId, getActiveColumn, getUploadedFileNames, setUploadedFileNames, setActiveColumn, activeColumnRef, showToast, updateItem]);
 
   return (
     <div style={{
@@ -415,7 +853,6 @@ function FlowPdf() {
       display: "flex",
       flexDirection: "column",
     }}>
-      {/* Dark Blue Header */}
       <div style={{
         background: "linear-gradient(135deg, #0c4a6e, #38bdf8)",
         padding: "15px 15px",
@@ -429,7 +866,6 @@ function FlowPdf() {
         }}>FlowPDF</h2>
       </div>
 
-      {/* White Content Area */}
       <div style={{
         flex: 1,
         background: "#ffffff",
@@ -438,25 +874,22 @@ function FlowPdf() {
         flexDirection: "column",
         overflow: "hidden",
       }}>
-        {/* Upload Button */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", marginBottom: 12 }}>
           <div
             role="button"
             tabIndex={0}
-            onMouseEnter={() => setUploadHover(true)}
-            onMouseLeave={() => { setUploadHover(false); setUploadActive(false); }}
-            onMouseDown={() => setUploadActive(true)}
-            onMouseUp={() => setUploadActive(false)}
+            onMouseEnter={handleUploadMouseEnter}
+            onMouseLeave={handleUploadMouseLeave}
+            onMouseDown={handleUploadMouseDown}
+            onMouseUp={handleUploadMouseUp}
             onClick={fileClick}
             onKeyDown={(event) => handleKeyActivate(event, fileClick)}
             style={{
               padding: "9px 12px",
-              background: uploadHover || uploadActive ? primaryBlue : "#ffffff",
-              backgroundColor: uploadHover || uploadActive ? primaryBlue : "#ffffff",
-              backgroundImage: "none",
-              color: uploadHover || uploadActive ? "#ffffff" : primaryBlue,
+              backgroundColor: uploadHover || uploadActive ? PRIMARY_BLUE : "#ffffff",
+              color: uploadHover || uploadActive ? "#ffffff" : PRIMARY_BLUE,
               borderRadius: 20,
-              border: uploadHover || uploadActive ? "2px solid transparent" : `2px solid ${primaryBlue}`,
+              border: uploadHover || uploadActive ? "2px solid transparent" : `2px solid ${PRIMARY_BLUE}`,
               cursor: "pointer",
               fontWeight: 600,
               fontSize: 14,
@@ -476,7 +909,6 @@ function FlowPdf() {
           </div>
         </div>
 
-        {/* File List Container - Flex to fill remaining space */}
         <div style={{
           flex: 1,
           display: "flex",
@@ -486,7 +918,6 @@ function FlowPdf() {
           background: "#fafafa",
           overflow: "hidden",
         }}>
-          {/* Tabs Header - Standard Tab Bar Design */}
           <div style={{
             display: "flex",
             background: "#ffffff",
@@ -495,13 +926,13 @@ function FlowPdf() {
             <div
               role="tab"
               tabIndex={0}
-              onClick={() => setActiveTab("uploaded")}
-              onMouseEnter={() => setHoveredTab("uploaded")}
-              onMouseLeave={() => setHoveredTab(null)}
-              onKeyDown={(event) => handleKeyActivate(event, () => setActiveTab("uploaded"))}
+              onClick={() => handleTabClick("uploaded")}
+              onMouseEnter={() => handleTabMouseEnter("uploaded")}
+              onMouseLeave={handleTabMouseLeave}
+              onKeyDown={(event) => handleKeyActivate(event, () => handleTabClick("uploaded"))}
               style={getTabStyle("uploaded")}
             >
-              <span>Uploaded Files </span>
+              <span>Uploaded Files</span>
               {uploadedFiles.length > 0 && (
                 <span style={getBadgeStyle("uploaded")}>
                   ({uploadedFiles.length})
@@ -511,10 +942,10 @@ function FlowPdf() {
             <div
               role="tab"
               tabIndex={0}
-              onClick={() => setActiveTab("failed")}
-              onMouseEnter={() => setHoveredTab("failed")}
-              onMouseLeave={() => setHoveredTab(null)}
-              onKeyDown={(event) => handleKeyActivate(event, () => setActiveTab("failed"))}
+              onClick={() => handleTabClick("failed")}
+              onMouseEnter={() => handleTabMouseEnter("failed")}
+              onMouseLeave={handleTabMouseLeave}
+              onKeyDown={(event) => handleKeyActivate(event, () => handleTabClick("failed"))}
               style={getTabStyle("failed")}
             >
               <span>Failed Files </span>
@@ -526,7 +957,6 @@ function FlowPdf() {
             </div>
           </div>
 
-          {/* File List Content - Scrollable */}
           <div style={{
             flex: 1,
             overflowY: "auto",
@@ -542,76 +972,12 @@ function FlowPdf() {
               </div>
             )}
             {displayFiles.map((file) => (
-              <div
-                key={file.id}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: "10px",
-                  borderRadius: 6,
-                  background: "#ffffff",
-                  border: "1px solid #e8e8e8",
-                  marginBottom: 8,
-                  transition: "all 150ms ease",
-                }}
-              >
-                {/*<div style={{
-                  width: 36,
-                  height: 36,
-                  borderRadius: 6,
-                  background: file.status === "failed" 
-                    ? "linear-gradient(135deg, #ffebee, #ffcdd2)"
-                    : "linear-gradient(135deg, #e3f2fd, #bbdefb)",
-                  border: file.status === "failed" ? "1px solid #ef5350" : "1px solid #90caf9",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: 16,
-                  flex: "0 0 auto",
-                }}>
-                  📄
-                </div>*/}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{
-                    fontSize: 12,
-                    fontWeight: 500,
-                    whiteSpace: "nowrap",
-                    textOverflow: "ellipsis",
-                    overflow: "hidden",
-                    marginBottom: 2,
-                  }}>
-                    {file.name}
-                  </div>
-                  <div style={{ fontSize: 10, color: "#757575" }}>
-                    {typeof file.size === "number" ? `${(file.size / (1024 * 1024)).toFixed(2)} MB` : ""}
-                  </div>
-                  {file.status === "failed" && file.error && (
-                    <div style={{
-                      fontSize: 10,
-                      color: "#d32f2f",
-                      marginTop: 3,
-                      background: "#ffebee",
-                      padding: "3px 6px",
-                      borderRadius: 3,
-                    }}>
-                      {file.error}
-                    </div>
-                  )}
-                </div>
-                <div style={{
-                  fontSize: 16,
-                  flex: "0 0 auto",
-                }}>
-                  {file.status === "success" ? "✅" : file.status === "failed" ? "❌" : "⏳"}
-                </div>
-              </div>
+              <FileItem key={file.id} file={file} />
             ))}
           </div>
         </div>
       </div>
 
-      {/* Blue Footer */}
       <div style={{
         background: "linear-gradient(135deg, #0c4a6e, #38bdf8)",
         padding: "10px 16px",
@@ -619,10 +985,9 @@ function FlowPdf() {
         fontSize: 11,
         textAlign: "center",
       }}>
-        FlowPDF Plugin v1.0
+        FlowPDF Plugin v1.1
       </div>
 
-      {/* Toast Notifications Container */}
       <div style={{
         position: "fixed",
         bottom: 20,
@@ -636,57 +1001,9 @@ function FlowPdf() {
         alignItems: "flex-end",
         paddingRight: 20,
       }}>
-        {toasts.map((toast) => {
-          const colors = {
-            success: { bg: "#10b981", border: "#059669" },
-            error: { bg: "#ef4444", border: "#dc2626" },
-            warning: { bg: "#f59e0b", border: "#d97706" },
-            info: { bg: "#3b82f6", border: "#2563eb" }
-          };
-          const color = colors[toast.type] || colors.info;
-
-          return (
-            <div
-              key={toast.id}
-              style={{
-                background: color.bg,
-                border: `2px solid ${color.border}`,
-                borderRadius: 6,
-                padding: "8px 12px",
-                boxShadow: "0 3px 10px rgba(0,0,0,0.3)",
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                color: "#ffffff",
-                minWidth: 200,
-              }}
-            >
-              <div style={{ flex: 1, fontSize: 11, fontWeight: 500 }}>
-                {toast.message}
-              </div>
-              <button
-                onClick={() => removeToast(toast.id)}
-                style={{
-                  background: "rgba(255,255,255,0.2)",
-                  border: "none",
-                  color: "#ffffff",
-                  fontSize: 14,
-                  cursor: "pointer",
-                  width: 20,
-                  height: 20,
-                  borderRadius: "50%",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontWeight: "bold",
-                }}
-                title="Close"
-              >
-                ×
-              </button>
-            </div>
-          );
-        })}
+        {toasts.map((toast) => (
+          <Toast key={toast.id} toast={toast} onClose={removeToast} />
+        ))}
       </div>
     </div>
   );
