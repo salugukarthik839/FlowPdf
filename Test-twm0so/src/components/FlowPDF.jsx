@@ -7,6 +7,24 @@ const MAX_FILES_PER_BATCH = 50;
 const COLUMN_FULL_THRESHOLD = 50;
 const TOAST_AUTO_DISMISS_MS = 5000;
 
+const ICON_ARROW_POINTS = [
+  [10.029, 5],
+  [0, 5],
+  [0, 12.967],
+  [10.029, 12.967],
+  [10.029, 18],
+  [19.99, 8.952],
+  [10.029, 0],
+];
+const ICON_ARROW_CENTER_X = 9.995;
+const ICON_ARROW_CENTER_Y = 9;
+const ICON_ARROW_WIDTH = 19.99;
+const ICON_ARROW_HEIGHT = 18;
+const ICON_ARROW_SCALE = 1.25;
+const ARROW_HEIGHT_PT = ICON_ARROW_HEIGHT * ICON_ARROW_SCALE;
+const ARROW_VERTICAL_GAP = 0;
+const FLOW_ARROW_LABEL = "FlowPDFArrow";
+
 // Utility: Check if two rectangles overlap
 function rectsOverlap(r1, r2) {
   return !(
@@ -257,6 +275,7 @@ function FlowPdf() {
   const [uploadActive, setUploadActive] = useState(false);
   const [activeTab, setActiveTab] = useState("uploaded");
   const [hoveredTab, setHoveredTab] = useState(null);
+  const [isInsertingArrow, setIsInsertingArrow] = useState(false);
 
   const { toasts, showToast, removeToast } = useToast();
   const {
@@ -386,6 +405,268 @@ function FlowPdf() {
   const updateItem = useCallback((id, data) => {
     setFileItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...data } : it)));
   }, []);
+
+  const insertArrowShape = useCallback(async () => {
+    if (isInsertingArrow) {
+      return;
+    }
+    setIsInsertingArrow(true);
+    try {
+      if (!app.documents.length) {
+        showToast("No active document open. Please open a document first.", "error");
+        return;
+      }
+
+      const doc = app.activeDocument;
+      if (!doc || !doc.pages || doc.pages.length === 0) {
+        showToast("Document has no pages. Please add a page first.", "error");
+        return;
+      }
+
+      const getPageByIndex = (pages, index) => {
+        if (!pages) return null;
+        try {
+          if (typeof pages.item === "function") return pages.item(index);
+          return pages[index];
+        } catch (e) {
+          return null;
+        }
+      };
+
+      const computeBestSpotOnPage = (page, pageIndex) => {
+        try {
+          const marginPrefs = page.marginPreferences;
+          const bounds = page.bounds;
+          const topMargin = marginPrefs.top || 0;
+          const bottomMargin = (marginPrefs.bottom !== undefined ? marginPrefs.bottom : marginPrefs.bottomMargin) || 0;
+          const leftMargin = marginPrefs.left || 0;
+          const rightMargin = marginPrefs.right || 0;
+          const columnCount = Math.max(1, marginPrefs.columnCount || 1);
+          const columnGutter = marginPrefs.columnGutter || 0;
+
+          const contentTop = bounds[0] + topMargin;
+          const contentBottom = bounds[2] - bottomMargin;
+          const contentLeft = bounds[1] + leftMargin;
+          const contentRight = bounds[3] - rightMargin;
+          const usableWidth = contentRight - contentLeft;
+          const columnWidth = (usableWidth - columnGutter * (columnCount - 1)) / columnCount;
+          if (columnWidth <= 0) return null;
+
+          const columnSpan = columnWidth + columnGutter;
+          const columnStarts = Array.from({ length: columnCount }, (_, idx) => contentLeft + idx * columnSpan);
+          const columnItems = Array.from({ length: columnCount }, () => []);
+
+          const pageItems = page.pageItems;
+          const pageItemCount = typeof pageItems.length === "number" ? pageItems.length : pageItems.count();
+          for (let i = 0; i < pageItemCount; i++) {
+            let item = null;
+            try {
+              item = typeof pageItems.item === "function" ? pageItems.item(i) : pageItems[i];
+            } catch (e) {
+              continue;
+            }
+            if (!item) continue;
+            let gb = null;
+            try {
+              gb = item.geometricBounds;
+            } catch (e) {
+              continue;
+            }
+            if (!gb || gb.length < 4) continue;
+            const itemBottom = gb[2];
+            const itemTop = gb[0];
+            const itemCenterX = (gb[1] + gb[3]) / 2;
+            if (itemBottom <= contentTop) continue;
+
+            const relativeX = itemCenterX - contentLeft;
+            let columnIndex = Math.floor(relativeX / columnSpan);
+            if (isNaN(columnIndex)) columnIndex = 0;
+            columnIndex = Math.max(0, Math.min(columnCount - 1, columnIndex));
+            columnItems[columnIndex].push({
+              top: itemTop,
+              bottom: itemBottom
+            });
+          }
+
+          let bestOnPage = null;
+          const columnCandidates = Array(columnCount).fill(null);
+          for (let col = 0; col < columnCount; col++) {
+            const items = columnItems[col].sort((a, b) => a.top - b.top);
+            let cursor = contentTop;
+            let columnCandidate = null;
+
+            for (const item of items) {
+              const gapHeight = item.top - cursor;
+              if (gapHeight >= ARROW_HEIGHT_PT) {
+                columnCandidate = {
+                  page,
+                  pageIndex,
+                  columnIndex: col,
+                  top: cursor,
+                  centerX: columnStarts[col] + ICON_ARROW_CENTER_X * ICON_ARROW_SCALE,
+                  y: cursor + ARROW_HEIGHT_PT / 2,
+                  bottom: cursor + ARROW_HEIGHT_PT,
+                };
+              }
+              cursor = Math.max(cursor, item.bottom + ARROW_VERTICAL_GAP);
+            }
+
+            if (!columnCandidate && cursor + ARROW_HEIGHT_PT <= contentBottom) {
+              columnCandidate = {
+                page,
+                pageIndex,
+                columnIndex: col,
+                top: cursor,
+                centerX: columnStarts[col] + ICON_ARROW_CENTER_X * ICON_ARROW_SCALE,
+                y: cursor + ARROW_HEIGHT_PT / 2,
+                bottom: cursor + ARROW_HEIGHT_PT,
+              };
+            }
+
+            if (!columnCandidate) continue;
+
+            columnCandidates[col] = columnCandidate;
+          }
+
+          for (let col = 0; col < columnCount; col++) {
+            const candidate = columnCandidates[col];
+            if (!candidate) continue;
+            if (!bestOnPage || candidate.top > bestOnPage.top) {
+              bestOnPage = candidate;
+            }
+            break;
+          }
+          return bestOnPage;
+        } catch (e) {
+          console.log("Could not compute placement spot on page", e);
+        }
+        return null;
+      };
+
+      const findSpot = () => {
+        const totalPages = typeof doc.pages.length === "number" ? doc.pages.length : doc.pages.count();
+        let bestSpot = null;
+        for (let idx = 0; idx < totalPages; idx++) {
+          const page = getPageByIndex(doc.pages, idx);
+          if (!page) continue;
+          const spot = computeBestSpotOnPage(page, idx);
+          if (!spot) continue;
+          if (
+            !bestSpot ||
+            spot.pageIndex < bestSpot.pageIndex ||
+            (spot.pageIndex === bestSpot.pageIndex && spot.columnIndex < bestSpot.columnIndex) ||
+            (spot.pageIndex === bestSpot.pageIndex && spot.columnIndex === bestSpot.columnIndex && spot.top > bestSpot.top)
+          ) {
+            bestSpot = spot;
+          }
+        }
+        return bestSpot;
+      };
+
+      let spot = findSpot();
+      if (!spot && activeColumnRef.current) {
+        try {
+          const fallback = activeColumnRef.current;
+          const targetPageIndex = Math.min(fallback.pageIndex || 0, (doc.pages.length || 1) - 1);
+          const fallbackPage = doc.pages.item(targetPageIndex);
+          const fallbackBounds = fallbackPage.bounds;
+          const fallbackMargins = fallbackPage.marginPreferences;
+          const fallbackLeftMargin = fallbackMargins.left || 0;
+          const fallbackTop = fallback.bottomY || ((fallbackBounds[0] || 0) + (fallbackMargins.top || 0));
+
+          spot = {
+            page: fallbackPage,
+            pageIndex: targetPageIndex,
+            columnIndex: fallback.columnIndex || 0,
+            top: fallbackTop,
+            centerX: (fallbackBounds[1] + fallbackLeftMargin) + ICON_ARROW_CENTER_X * ICON_ARROW_SCALE,
+            y: fallbackTop + ARROW_HEIGHT_PT / 2,
+            bottom: fallbackTop + ARROW_HEIGHT_PT,
+          };
+        } catch (e) {
+          console.log("Fallback spot creation failed", e);
+        }
+      }
+      const spread = spot ? (spot.page.parent || doc.activeSpread) : null;
+      if (!spot || !spread) {
+        showToast("No free column slot available to place the arrow.", "warning");
+        return;
+      }
+
+      let activeLayer = null;
+      try {
+        activeLayer = doc.activeLayer;
+      } catch (e) {
+        console.log("doc.activeLayer lookup failed", e);
+      }
+      if (!activeLayer) {
+        try {
+          activeLayer = spread.activeLayer;
+        } catch (e) {
+          console.log("spread.activeLayer lookup failed", e);
+        }
+      }
+      if (!activeLayer && doc.layers) {
+        try {
+          if (typeof doc.layers.item === "function" && doc.layers.length > 0) {
+            activeLayer = doc.layers.item(0);
+          } else if (doc.layers[0]) {
+            activeLayer = doc.layers[0];
+          }
+        } catch (e) {
+          console.log("doc.layers lookup failed", e);
+        }
+      }
+      if (!activeLayer) {
+        showToast("Could not access a document layer for placement.", "error");
+        return;
+      }
+
+      const arrow = spread.polygons.add(activeLayer);
+      const arrowPoints = ICON_ARROW_POINTS.map(([px, py]) => [
+        spot.centerX + (px - ICON_ARROW_CENTER_X) * ICON_ARROW_SCALE,
+        spot.y + (py - ICON_ARROW_CENTER_Y) * ICON_ARROW_SCALE,
+      ]);
+
+      try {
+        arrow.paths.item(0).entirePath = arrowPoints;
+        arrow.paths.item(0).closed = true;
+      } catch (e) {
+        console.log("Could not set arrow path", e);
+      }
+
+      try {
+        arrow.fillColor = doc.swatches.item("Black");
+      } catch (e) {
+        console.log("Using default fill color");
+      }
+
+      try {
+        arrow.strokeWeight = 0;
+      } catch (e) {
+        // ignore
+      }
+
+      try {
+        if (typeof arrow.select === "function") {
+          arrow.select();
+        }
+      } catch (e) {
+        console.log("Could not select arrow", e);
+      }
+
+      try {
+        arrow.label = FLOW_ARROW_LABEL;
+      } catch (e) {
+        console.log("Could not label arrow", e);
+      }
+    } catch (error) {
+      console.error("Error inserting arrow:", error);
+      showToast("Failed to insert arrow: " + (error.message || "Unknown error"), "error");
+    } finally {
+      setIsInsertingArrow(false);
+    }
+  }, [isInsertingArrow, showToast]);
 
   // Main file upload handler
   const fileClick = useCallback(async () => {
@@ -522,6 +803,59 @@ function FlowPdf() {
       return rects;
     };
 
+    const collectArrowAnchors = () => {
+      const anchors = [];
+      const totalPages = typeof doc.pages.length === "number" ? doc.pages.length : doc.pages.count();
+      const columnSpan = columnWidth + columnGutter;
+      if (columnSpan <= 0) {
+        return anchors;
+      }
+
+      for (let pageIndex = 0; pageIndex < totalPages; pageIndex++) {
+        const page = doc.pages.item(pageIndex);
+        const pageItems = page.pageItems;
+        const itemCount = typeof pageItems.length === "number" ? pageItems.length : pageItems.count();
+        for (let i = 0; i < itemCount; i++) {
+          let item = null;
+          try {
+            item = typeof pageItems.item === "function" ? pageItems.item(i) : pageItems[i];
+          } catch (e) {
+            continue;
+          }
+          if (!item || item.label !== FLOW_ARROW_LABEL) continue;
+
+          let bounds = null;
+          try {
+            bounds = item.geometricBounds;
+          } catch (e) {
+            continue;
+          }
+          if (!bounds || bounds.length < 4) continue;
+
+          const pageBounds = page.bounds;
+          const contentLeft = (pageBounds[1] || 0) + leftMargin;
+          let relativeX = bounds[1] - contentLeft;
+          let columnIndex = Math.floor(relativeX / columnSpan);
+          if (isNaN(columnIndex)) columnIndex = 0;
+          columnIndex = Math.max(0, Math.min(numColumns - 1, columnIndex));
+
+          anchors.push({
+            pageIndex,
+            columnIndex,
+            top: bounds[0],
+            polygon: item
+          });
+        }
+      }
+
+      anchors.sort((a, b) => {
+        if (a.pageIndex !== b.pageIndex) return a.pageIndex - b.pageIndex;
+        return a.top - b.top;
+      });
+
+      return anchors;
+    };
+
     const updateActiveColumn = () => {
       const activePage = doc.layoutWindows.item(0).activePage;
       const activePageIndex = activePage.documentOffset;
@@ -600,12 +934,17 @@ function FlowPdf() {
       setActiveColumn(columnData);
     };
 
-    const tryPlaceOnPage = async (page, fileEntry, fileWidth, fileHeight, startColumn = 0, minY = topMargin) => {
+    const tryPlaceOnPage = async (page, fileEntry, fileWidth, fileHeight, startColumn = 0, minY = topMargin, onlyColumn = null) => {
       const usableBottom = pageHeight - bottomMargin;
       const existingRects = getExistingRects(page);
       const columnsNeeded = Math.ceil(fileWidth / columnWidth);
 
-      for (let col = startColumn; col < numColumns; col++) {
+      const columnIndices = onlyColumn !== null
+        ? [onlyColumn]
+        : Array.from({ length: numColumns - startColumn }, (_, idx) => startColumn + idx);
+
+      for (const col of columnIndices) {
+        if (col < 0 || col >= numColumns) continue;
         const columnStart = leftMargin + col * (columnWidth + columnGutter);
         const columnEnd = columnStart + columnsNeeded * columnWidth;
 
@@ -698,16 +1037,81 @@ function FlowPdf() {
     };
 
     detectDeletedFiles();
-    updateActiveColumn();
+    const removeAnchorPolygon = (anchor) => {
+      try {
+        if (anchor && anchor.polygon) {
+          anchor.polygon.remove();
+        }
+      } catch (e) {
+        // ignore
+      }
+    };
 
-    const initialActiveColumn = activeColumnRef.current || {
+    let arrowAnchors = collectArrowAnchors()
+      .filter(anchor => {
+        try {
+          const gb = anchor.polygon.geometricBounds;
+          if (!gb || gb.length < 4) return false;
+          return gb[0] < gb[2] && gb[1] < gb[3];
+        } catch (e) {
+          return false;
+        }
+      })
+      .sort((a, b) => {
+        if (a.pageIndex !== b.pageIndex) return a.pageIndex - b.pageIndex;
+        if (a.columnIndex !== b.columnIndex) return a.columnIndex - b.columnIndex;
+        return a.top - b.top;
+      });
+
+    let nextAnchorStart = null;
+    if (arrowAnchors.length > 0) {
+      const firstAnchor = arrowAnchors[0];
+      const anchorPageIndex = Math.min(firstAnchor.pageIndex, doc.pages.length - 1);
+      nextAnchorStart = {
+        pageIndex: anchorPageIndex,
+        columnIndex: firstAnchor.columnIndex,
+        bottomY: Math.max(topMargin, firstAnchor.top),
+      };
+      activeColumnRef.current = nextAnchorStart;
+
+      arrowAnchors = arrowAnchors.filter((anchor, idx) => {
+        const isOverlap =
+          idx !== 0 &&
+          anchor.pageIndex === anchorPageIndex &&
+          anchor.columnIndex === firstAnchor.columnIndex &&
+          anchor.top <= nextAnchorStart.bottomY;
+        if (isOverlap) {
+          removeAnchorPolygon(anchor);
+          return false;
+        }
+        return true;
+      });
+    }
+
+    const removeOverlappingAnchors = (pageIndex, columnIndex, top, bottom) => {
+      arrowAnchors = arrowAnchors.filter(anchor => {
+        const anchorBottom = anchor.top + ARROW_HEIGHT_PT;
+        const overlaps =
+          anchor.pageIndex === pageIndex &&
+          anchor.columnIndex === columnIndex &&
+          Math.max(top, anchor.top) < Math.min(bottom, anchorBottom);
+        if (overlaps) {
+          removeAnchorPolygon(anchor);
+          return false;
+        }
+        return true;
+      });
+    };
+
+    let initialActiveColumn = activeColumnRef.current || {
       pageIndex: 0,
       columnIndex: 0,
       bottomY: topMargin
     };
-    let batchPageIndex = initialActiveColumn.pageIndex;
-    let batchColumnIndex = initialActiveColumn.columnIndex;
-    let batchMinY = initialActiveColumn.bottomY;
+    let batchPageIndex = nextAnchorStart ? nextAnchorStart.pageIndex : initialActiveColumn.pageIndex;
+    let batchColumnIndex = nextAnchorStart ? nextAnchorStart.columnIndex : initialActiveColumn.columnIndex;
+    let batchMinY = nextAnchorStart ? nextAnchorStart.bottomY : initialActiveColumn.bottomY;
+    let anchorUsedThisBatch = false;
 
     for (let index = 0; index < limitedFiles.length; index++) {
       const fileEntry = limitedFiles[index];
@@ -738,11 +1142,70 @@ function FlowPdf() {
       tempRect.remove();
 
       let result = null;
-      if (currentPageIndex < doc.pages.length) {
+
+      if (!placed && !anchorUsedThisBatch && arrowAnchors.length > 0) {
+        anchorUsedThisBatch = true;
+        const anchor = arrowAnchors.shift();
+        const anchorPageIndex = Math.min(anchor.pageIndex, doc.pages.length - 1);
+
+        currentPageIndex = anchorPageIndex;
+        currentColumnIndex = anchor.columnIndex;
+        currentMinY = Math.max(topMargin, anchor.top);
+
+        const anchorPage = doc.pages.item(anchorPageIndex);
+        const anchorResult = await tryPlaceOnPage(
+          anchorPage,
+          fileEntry,
+          fileWidth,
+          fileHeight,
+          anchor.columnIndex,
+          currentMinY,
+          anchor.columnIndex
+        );
+
+        let anchorConsumed = false;
+        if (anchorResult.success) {
+          placed = true;
+          result = anchorResult;
+          anchorConsumed = true;
+        } else {
+          let fallbackResult = { success: false };
+          const fallbackStartColumn = anchor.columnIndex + 1;
+          if (fallbackStartColumn < numColumns) {
+            fallbackResult = await tryPlaceOnPage(
+              anchorPage,
+              fileEntry,
+              fileWidth,
+              fileHeight,
+              fallbackStartColumn,
+              topMargin,
+              null
+            );
+          }
+
+          if (fallbackResult.success) {
+            placed = true;
+            result = fallbackResult;
+            anchorConsumed = true;
+          } else {
+            removeAnchorPolygon(anchor);
+            currentPageIndex = anchorPageIndex + 1;
+            currentColumnIndex = 0;
+            currentMinY = topMargin;
+            showToast("Arrow location could not fit the file. Placing in the next available slot.", "warning");
+          }
+        }
+
+        if (anchorConsumed) {
+          removeAnchorPolygon(anchor);
+        }
+      }
+
+      if (!placed && currentPageIndex < doc.pages.length) {
         const pageToTry = doc.pages.item(currentPageIndex);
         result = await tryPlaceOnPage(pageToTry, fileEntry, fileWidth, fileHeight, currentColumnIndex, currentMinY);
         placed = result.success;
-      } else {
+      } else if (!placed) {
         placed = false;
       }
 
@@ -756,9 +1219,14 @@ function FlowPdf() {
         batchColumnIndex = result.columnIndex;
         batchMinY = result.bottomY;
 
+        const placedTop = result.bottomY - fileHeight;
+        removeOverlappingAnchors(currentPageIndex, result.columnIndex, placedTop, result.bottomY);
+
         if (checkColumnFullness(doc.pages.item(currentPageIndex), batchColumnIndex) && batchColumnIndex < numColumns - 1) {
           batchColumnIndex = batchColumnIndex + 1;
           batchMinY = topMargin;
+        } else {
+          batchMinY = result.bottomY;
         }
       }
 
@@ -874,7 +1342,31 @@ function FlowPdf() {
         flexDirection: "column",
         overflow: "hidden",
       }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", marginBottom: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={insertArrowShape}
+            onKeyDown={(event) => handleKeyActivate(event, insertArrowShape)}
+            style={{
+              width: 42,
+              height: 42,
+              backgroundColor: isInsertingArrow ? "#cfeffc" : "#f5f5f5",
+              border: "1px solid #d0d0d0",
+              borderRadius: 8,
+              cursor: isInsertingArrow ? "not-allowed" : "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              transition: "all 150ms ease",
+              opacity: isInsertingArrow ? 0.6 : 1,
+            }}
+            title="Insert arrow"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="19.99" height="18" style={{ fill: "#000000" }}>
+              <path d="M10.029 5H0v7.967h10.029V18l9.961-9.048L10.029 0v5z" />
+            </svg>
+          </div>
           <div
             role="button"
             tabIndex={0}
